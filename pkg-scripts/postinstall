@@ -3,36 +3,86 @@ set -eu
 
 service_name="com.miyakey.grimodex.inputmethod.ConverterServer"
 legacy_service_name="dev.ensan.inputmethod.azooKeyMac.ConverterServer"
-app_path="/Library/Input Methods/azooKeyMac.app"
-server_path="${app_path}/Contents/MacOS/ConverterServer"
-agent_dir="/Library/LaunchAgents"
+target_volume="${3:-/}"
+target_prefix="${target_volume%/}"
+runtime_app_path="/Library/Input Methods/azooKeyMac.app"
+runtime_server_path="${runtime_app_path}/Contents/MacOS/ConverterServer"
+installed_app_path="${target_prefix}${runtime_app_path}"
+installed_server_path="${target_prefix}${runtime_server_path}"
+agent_dir="${target_prefix}/Library/LaunchAgents"
 agent_path="${agent_dir}/${service_name}.plist"
 legacy_upstream_system_agent_path="${agent_dir}/${legacy_service_name}.plist"
+user_root="${target_prefix}/Users"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+verified_gui_uid=""
 
-installed_bundle_id="$(plutil -extract CFBundleIdentifier raw "${app_path}/Contents/Info.plist" 2>/dev/null || true)"
+legacy_agent_targets_system_app() {
+    legacy_program="$(
+        plutil -extract Program raw "$1" 2>/dev/null ||
+            plutil -extract ProgramArguments.0 raw "$1" 2>/dev/null || true
+    )"
+    [ "${legacy_program}" = "${runtime_server_path}" ]
+}
+
+remove_verified_legacy_agents() {
+    if [ "${legacy_system_agent_present}" = true ]; then
+        rm -f "${legacy_upstream_system_agent_path}"
+    elif [ -e "${legacy_upstream_system_agent_path}" ]; then
+        echo "Leaving unrelated legacy system LaunchAgent untouched: ${legacy_upstream_system_agent_path}" >&2
+    fi
+
+    for legacy_user_agent in "${user_root}"/*/Library/LaunchAgents/${legacy_service_name}.plist; do
+        if legacy_agent_targets_system_app "${legacy_user_agent}"; then
+            legacy_home="${legacy_user_agent%/Library/LaunchAgents/${legacy_service_name}.plist}"
+            if [ "${target_volume}" = "/" ] && [ -n "${verified_gui_uid}" ]; then
+                legacy_uid="$(stat -f %u "${legacy_home}" 2>/dev/null || true)"
+                # Other active login sessions keep their loaded helper until logout;
+                # only the session where the new helper was verified is stopped now.
+                if [ "${legacy_uid}" = "${verified_gui_uid}" ]; then
+                    launchctl bootout "gui/${legacy_uid}/${legacy_service_name}" >/dev/null 2>&1 || true
+                fi
+            fi
+            rm -f "${legacy_user_agent}"
+        elif [ -e "${legacy_user_agent}" ]; then
+            echo "Leaving user-local upstream LaunchAgent untouched: ${legacy_user_agent}" >&2
+        fi
+    done
+}
+
+installed_bundle_id="$(plutil -extract CFBundleIdentifier raw "${installed_app_path}/Contents/Info.plist" 2>/dev/null || true)"
 if [ "${installed_bundle_id}" != "com.miyakey.grimodex.inputmethod" ]; then
     echo "Unexpected input method bundle identifier: ${installed_bundle_id}" >&2
     exit 1
 fi
 
-if [ ! -x "${server_path}" ]; then
-    echo "ConverterServer not found: ${server_path}" >&2
+if [ ! -x "${installed_server_path}" ]; then
+    echo "ConverterServer not found: ${installed_server_path}" >&2
     exit 1
 fi
 
-"${script_dir}/write_converter_server_launch_agent.sh" "${agent_path}" "${server_path}" "${service_name}"
+"${script_dir}/write_converter_server_launch_agent.sh" \
+    "${agent_path}" \
+    "${runtime_server_path}" \
+    "${service_name}"
 chmod 644 "${agent_path}"
-chown root:wheel "${agent_path}"
-rm -f "${legacy_upstream_system_agent_path}"
-for legacy_user_agent in /Users/*/Library/LaunchAgents/${legacy_service_name}.plist; do
-    if [ -e "${legacy_user_agent}" ]; then
-        rm -f "${legacy_user_agent}"
-    fi
-done
+if [ "$(id -u)" -eq 0 ]; then
+    chown root:wheel "${agent_path}"
+fi
+
+legacy_system_agent_present=false
+if legacy_agent_targets_system_app "${legacy_upstream_system_agent_path}"; then
+    legacy_system_agent_present=true
+fi
+
+if [ "${target_volume}" != "/" ]; then
+    remove_verified_legacy_agents
+    echo "Installed ${service_name} on ${target_volume}; it will start when that volume boots."
+    exit 0
+fi
 
 console_user="$(stat -f %Su /dev/console)"
 if [ -z "${console_user}" ] || [ "${console_user}" = "root" ] || [ "${console_user}" = "_mbsetupuser" ]; then
+    remove_verified_legacy_agents
     echo "No active console user; ${service_name} will start on next login."
     exit 0
 fi
@@ -40,19 +90,36 @@ fi
 console_uid="$(id -u "${console_user}")"
 gui_domain="gui/${console_uid}"
 legacy_agent_path="$(eval echo "~${console_user}")/Library/LaunchAgents/${service_name}.plist"
-legacy_upstream_agent_path="$(eval echo "~${console_user}")/Library/LaunchAgents/${legacy_service_name}.plist"
+legacy_agent_present=false
+if [ -f "${legacy_agent_path}" ]; then
+    legacy_agent_present=true
+fi
+
+start_new_service() {
+    launchctl bootstrap "${gui_domain}" "${agent_path}" &&
+        launchctl kickstart -k "${gui_domain}/${service_name}" &&
+        launchctl print "${gui_domain}/${service_name}" >/dev/null
+}
 
 launchctl bootout "${gui_domain}/${service_name}" >/dev/null 2>&1 || true
-launchctl bootout "${gui_domain}/${legacy_service_name}" >/dev/null 2>&1 || true
-launchctl bootout "${gui_domain}" "${legacy_upstream_system_agent_path}" >/dev/null 2>&1 || true
-launchctl bootout "${gui_domain}" "${legacy_upstream_agent_path}" >/dev/null 2>&1 || true
-if [ -f "${legacy_agent_path}" ]; then
+if [ "${legacy_agent_present}" = true ]; then
     launchctl bootout "${gui_domain}" "${legacy_agent_path}" >/dev/null 2>&1 || true
-    rm -f "${legacy_agent_path}"
 fi
-rm -f "${legacy_upstream_system_agent_path}" "${legacy_upstream_agent_path}"
-launchctl bootstrap "${gui_domain}" "${agent_path}"
-launchctl kickstart -k "${gui_domain}/${service_name}"
-launchctl print "${gui_domain}/${service_name}" >/dev/null
+if ! start_new_service; then
+    launchctl bootout "${gui_domain}/${service_name}" >/dev/null 2>&1 || true
+    if [ "${legacy_agent_present}" = true ]; then
+        launchctl bootstrap "${gui_domain}" "${legacy_agent_path}" >/dev/null 2>&1 || true
+        launchctl kickstart -k "${gui_domain}/${service_name}" >/dev/null 2>&1 || true
+    fi
+    echo "Failed to start ${service_name}; preserved the previous user LaunchAgent." >&2
+    exit 1
+fi
+
+rm -f "${legacy_agent_path}"
+verified_gui_uid="${console_uid}"
+if [ "${legacy_system_agent_present}" = true ]; then
+    launchctl bootout "${gui_domain}/${legacy_service_name}" >/dev/null 2>&1 || true
+fi
+remove_verified_legacy_agents
 
 echo "Installed and started ${service_name}"

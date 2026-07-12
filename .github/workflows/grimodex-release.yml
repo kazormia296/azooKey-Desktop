@@ -275,23 +275,33 @@ jobs:
           codesign --verify --deep --strict --verbose=4 "$APP_PATH"
           codesign -d --entitlements :- "$APP_PATH" > "$APP_ENTITLEMENTS"
           codesign -d --entitlements :- "$HELPER_PATH" > "$HELPER_ENTITLEMENTS"
-          ! plutil -p "$APP_ENTITLEMENTS" | grep -F '$('
-          ! plutil -p "$APP_ENTITLEMENTS" | grep -F \
-            'com.apple.security.network.client'
-          ! plutil -p "$HELPER_ENTITLEMENTS" | grep -F \
-            'com.apple.security.network.client'
-          plutil -p "$APP_ENTITLEMENTS" \
-            | grep -F '"com.apple.security.app-sandbox" => true'
-          plutil -p "$HELPER_ENTITLEMENTS" \
-            | grep -F '"com.apple.security.app-sandbox" => true'
-          plutil -p "$APP_ENTITLEMENTS" \
-            | grep -F "\"com.apple.security.application-groups\" => ["
-          plutil -p "$APP_ENTITLEMENTS" | grep -F "  0 => \"$APP_GROUP_ID\""
-          plutil -p "$HELPER_ENTITLEMENTS" | grep -F "  0 => \"$APP_GROUP_ID\""
+          APP_ENTITLEMENTS="$APP_ENTITLEMENTS" \
+          HELPER_ENTITLEMENTS="$HELPER_ENTITLEMENTS" \
+          APP_GROUP_ID="$APP_GROUP_ID" \
+          python3 - <<'PY'
+          import os
+          import plistlib
+
+          def load(environment_key: str) -> dict:
+              with open(os.environ[environment_key], "rb") as source:
+                  return plistlib.load(source)
+
+          app = load("APP_ENTITLEMENTS")
+          helper = load("HELPER_ENTITLEMENTS")
+          app_group_id = os.environ["APP_GROUP_ID"]
+          network_client = "com.apple.security.network.client"
+          assert "$(" not in repr(app)
+          assert network_client not in app
+          assert network_client not in helper
+          assert app["com.apple.security.app-sandbox"] is True
+          assert helper["com.apple.security.app-sandbox"] is True
+          assert app_group_id in app["com.apple.security.application-groups"]
+          assert app_group_id in helper["com.apple.security.application-groups"]
+          assert app["com.apple.security.temporary-exception.mach-register.global-name"] == \
+              "com.miyakey.grimodex.inputmethod_Connection"
+          PY
           test "$(plutil -extract GrimodexAppGroupIdentifier raw "$APP_PATH/Contents/Info.plist")" = \
             "$APP_GROUP_ID"
-          plutil -p "$APP_ENTITLEMENTS" \
-            | grep -F '"com.apple.security.temporary-exception.mach-register.global-name" => "com.miyakey.grimodex.inputmethod_Connection"'
           codesign -dvvv "$HELPER_PATH" 2>&1 \
             | grep -F 'Authority=Developer ID Application'
           codesign -dvvv "$APP_PATH" 2>&1 \

@@ -56,6 +56,7 @@ component_pkg="$work_dir/grimodex-ime-component.pkg"
 mkdir -p "$stage_dir" "$scripts_dir" "$output_dir"
 
 ditto "$app_path" "$stage_dir/azooKeyMac.app"
+install -m 755 "$repo_root/pkg-scripts/preinstall" "$scripts_dir/preinstall"
 install -m 755 "$repo_root/pkg-scripts/postinstall" "$scripts_dir/postinstall"
 install -m 755 \
     "$repo_root/Tools/write_converter_server_launch_agent.sh" \

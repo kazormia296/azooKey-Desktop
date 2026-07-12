@@ -1,0 +1,31 @@
+#!/bin/sh
+set -eu
+
+bundle_id="com.miyakey.grimodex.inputmethod"
+legacy_bundle_id="dev.ensan.inputmethod.azooKeyMac"
+target_volume="${3:-/}"
+target_prefix="${target_volume%/}"
+runtime_app_path="/Library/Input Methods/azooKeyMac.app"
+installed_app_path="${target_prefix}${runtime_app_path}"
+
+if [ ! -e "${installed_app_path}" ]; then
+    exit 0
+fi
+
+installed_bundle_id="$(
+    plutil -extract CFBundleIdentifier raw \
+        "${installed_app_path}/Contents/Info.plist" 2>/dev/null || true
+)"
+case "${installed_bundle_id}" in
+    "${bundle_id}")
+        # Let Installer perform a normal in-place Grimodex upgrade.
+        ;;
+    "${legacy_bundle_id}")
+        # BundleOverwriteAction=upgrade performs the replacement atomically.
+        echo "Verified upstream azooKey system bundle for Grimodex migration."
+        ;;
+    *)
+        echo "Refusing to replace unrecognized input method at ${installed_app_path}: ${installed_bundle_id}" >&2
+        exit 1
+        ;;
+esac

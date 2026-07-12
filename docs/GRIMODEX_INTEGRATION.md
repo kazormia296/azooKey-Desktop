@@ -180,6 +180,7 @@ gh run watch <run-id> --exit-status
 - Xcode unit tests と unsigned Release app build
 - branded bundle ID、offline entitlements、sandboxed helper
 - `.pkg` layout、embedded ConverterServer、postinstall LaunchAgent
+- case-sensitive APFS volume への実 `installer`、上流 system bundle からの移行
 
 この E2E は mock server ではなく実 process を起動しますが、InputMethodKit の
 入力ソース選択 UI は通りません。hosted runner には対話可能な login/input-source 状態が
@@ -237,9 +238,11 @@ postinstall が次を作成・起動します。
 
 これは fork 単独配布用の管理者承認を伴う system pkg です。将来 Grimodex 本体へ
 同梱する管理者不要の `~/Library/Input Methods/` 配置は、Grimodex の初回起動
-assistant が別経路で担います。postinstall は同じ app path を使っていた上流版からの
-移行時に、旧 `dev.ensan.inputmethod.azooKeyMac.ConverterServer` LaunchAgent を停止・
-削除して二重 helper を防ぎます。
+assistant が別経路で担います。preinstall は同じ app path の bundle ID を確認し、
+`dev.ensan.inputmethod.azooKeyMac` の上流 system bundle だけをInstallerのatomic upgrade対象に
+許可します。不明な bundle ID は上書きを拒否します。postinstall は system app を指す旧
+`dev.ensan.inputmethod.azooKeyMac.ConverterServer` LaunchAgent だけを停止・削除して
+二重 helper を防ぎます。user-local の上流 app を指す LaunchAgent は保持します。
 
 uninstall script は app、system/user LaunchAgent、package receipt と次の consumer record を
 削除します。

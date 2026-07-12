@@ -38,6 +38,11 @@ is_grimodex_app() {
         [ "$(plutil -extract CFBundleIdentifier raw "$1/Contents/Info.plist" 2>/dev/null || true)" = "${bundle_id}" ]
 }
 
+agent_program() {
+    plutil -extract Program raw "$1" 2>/dev/null ||
+        plutil -extract ProgramArguments.0 raw "$1" 2>/dev/null || true
+}
+
 owns_system_app=false
 owns_user_app=false
 if is_grimodex_app "${system_app}"; then
@@ -47,14 +52,28 @@ if is_grimodex_app "${user_app}"; then
     owns_user_app=true
 fi
 
-launchctl bootout "${gui_domain}/${service_name}" >/dev/null 2>&1 || true
-launchctl bootout "${gui_domain}" "${system_agent}" >/dev/null 2>&1 || true
-launchctl bootout "${gui_domain}" "${user_agent}" >/dev/null 2>&1 || true
-
 if [ "$(id -u)" -ne 0 ] && { [ -e "${system_agent}" ] || [ "${owns_system_app}" = true ]; }; then
     echo "System installation found. Re-run with sudo: sudo $0 ${target_user}" >&2
     exit 1
 fi
+
+legacy_system_agent_owned=false
+legacy_user_agent_owned=false
+if [ "${owns_system_app}" = true ] &&
+    [ "$(agent_program "${legacy_system_agent}")" = "${system_app}/Contents/MacOS/ConverterServer" ]; then
+    legacy_system_agent_owned=true
+fi
+legacy_user_program="$(agent_program "${legacy_user_agent}")"
+if { [ "${owns_system_app}" = true ] &&
+    [ "${legacy_user_program}" = "${system_app}/Contents/MacOS/ConverterServer" ]; } ||
+    { [ "${owns_user_app}" = true ] &&
+        [ "${legacy_user_program}" = "${user_app}/Contents/MacOS/ConverterServer" ]; }; then
+    legacy_user_agent_owned=true
+fi
+
+launchctl bootout "${gui_domain}/${service_name}" >/dev/null 2>&1 || true
+launchctl bootout "${gui_domain}" "${system_agent}" >/dev/null 2>&1 || true
+launchctl bootout "${gui_domain}" "${user_agent}" >/dev/null 2>&1 || true
 
 rm -f "${user_agent}" "${consumer_handshake}"
 if [ "${owns_user_app}" = true ]; then
@@ -63,14 +82,20 @@ elif [ -e "${user_app}" ]; then
     echo "Leaving non-Grimodex app untouched: ${user_app}" >&2
 fi
 
-if [ "${owns_system_app}" = true ] || [ "${owns_user_app}" = true ]; then
+if [ "${legacy_system_agent_owned}" = true ] || [ "${legacy_user_agent_owned}" = true ]; then
     launchctl bootout "${gui_domain}/${legacy_service_name}" >/dev/null 2>&1 || true
+fi
+if [ "${legacy_system_agent_owned}" = true ]; then
     launchctl bootout "${gui_domain}" "${legacy_system_agent}" >/dev/null 2>&1 || true
+    rm -f "${legacy_system_agent}"
+elif [ -e "${legacy_system_agent}" ]; then
+    echo "Leaving non-Grimodex legacy LaunchAgent untouched: ${legacy_system_agent}" >&2
+fi
+if [ "${legacy_user_agent_owned}" = true ]; then
     launchctl bootout "${gui_domain}" "${legacy_user_agent}" >/dev/null 2>&1 || true
-    if [ "$(id -u)" -eq 0 ]; then
-        rm -f "${legacy_system_agent}"
-    fi
     rm -f "${legacy_user_agent}"
+elif [ -e "${legacy_user_agent}" ]; then
+    echo "Leaving user-local upstream LaunchAgent untouched: ${legacy_user_agent}" >&2
 fi
 
 if [ "$(id -u)" -eq 0 ]; then

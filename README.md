@@ -44,6 +44,11 @@ OS 入力ソース E2E は対話可能な実機が必要です。CI の保証範
 GitHub Actions の `Unsigned app and pkg contract` artifact は構造検証用であり、
 日常利用向けの署名済み配布物ではありません。
 
+同じ system path に上流 azooKey がある場合、installer は bundle ID が
+`dev.ensan.inputmethod.azooKeyMac` と一致することを確認し、Installer の atomic upgrade で
+Grimodex 版へ移行します。
+別製品は上書きせず、user-local の上流 azooKey とその LaunchAgent も削除しません。
+
 ## アンインストール
 
 最初に別の入力ソースへ切り替え、システム設定の入力ソース一覧から
