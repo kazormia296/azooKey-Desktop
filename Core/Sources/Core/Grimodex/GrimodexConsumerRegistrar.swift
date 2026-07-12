@@ -320,20 +320,30 @@ public final class GrimodexConsumerRegistrar: @unchecked Sendable {
         }
         defer { _ = close(descriptor) }
 
-        let information = UnsafeMutablePointer<stat>.allocate(capacity: 1)
-        defer { information.deallocate() }
-        guard fstat(descriptor, information) == 0 else {
+        #if canImport(Darwin)
+        var information = stat()
+        guard Darwin.fstat(descriptor, &information) == 0 else {
             throw GrimodexConsumerRegistrarError.systemCall(
                 operation: "inspect private directory",
                 errno: errno
             )
         }
-        guard information.pointee.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+        guard information.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
             throw GrimodexConsumerRegistrarError.unsafeDirectory(path: url.path)
         }
-        guard information.pointee.st_uid == getuid() else {
+        guard information.st_uid == getuid() else {
             throw GrimodexConsumerRegistrarError.wrongOwner(path: url.path)
         }
+        #else
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeDirectory else {
+            throw GrimodexConsumerRegistrarError.unsafeDirectory(path: url.path)
+        }
+        guard let owner = attributes[.ownerAccountID] as? NSNumber,
+              owner.uint32Value == getuid() else {
+            throw GrimodexConsumerRegistrarError.wrongOwner(path: url.path)
+        }
+        #endif
         guard fchmod(descriptor, mode_t(0o700)) == 0 else {
             throw GrimodexConsumerRegistrarError.systemCall(
                 operation: "chmod private directory",

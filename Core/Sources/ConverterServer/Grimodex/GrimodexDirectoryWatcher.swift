@@ -246,7 +246,7 @@ final class GrimodexDirectoryWatcher: @unchecked Sendable {
     private func registrationStillNamesCurrentDirectory(_ registration: Registration) -> Bool {
         var info = stat()
         let result = registration.path.withCString { path in
-            Darwin.stat(path, &info)
+            Darwin.lstat(path, &info)
         }
         guard result == 0 else {
             return false
@@ -294,7 +294,7 @@ final class GrimodexDirectoryWatcher: @unchecked Sendable {
     private func isDirectory(_ url: URL) -> Bool {
         var info = stat()
         let result = url.path.withCString { path in
-            Darwin.stat(path, &info)
+            Darwin.lstat(path, &info)
         }
         return result == 0
             && (info.st_mode & S_IFMT) == S_IFDIR
