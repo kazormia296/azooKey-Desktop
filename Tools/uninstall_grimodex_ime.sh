@@ -39,8 +39,8 @@ is_grimodex_app() {
 }
 
 agent_program() {
-    plutil -extract Program raw "$1" 2>/dev/null ||
-        plutil -extract ProgramArguments.0 raw "$1" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c 'Print :Program' "$1" 2>/dev/null ||
+        /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$1" 2>/dev/null || true
 }
 
 owns_system_app=false

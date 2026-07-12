@@ -127,7 +127,7 @@ test -f "${bob_agent_dir}/${legacy_service_name}.plist"
 test -f "${carol_agent_dir}/${legacy_service_name}.plist"
 test ! -e "${dave_agent_dir}/${legacy_service_name}.plist"
 test "$(
-    plutil -extract ProgramArguments.0 raw \
+    /usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' \
         "${system_agent_dir}/${service_name}.plist"
 )" = "${runtime_server_path}"
 
