@@ -228,7 +228,7 @@ jobs:
             GrimodexPkgE2E \
             -mountpoint "$MOUNT_POINT"
 
-          touch "$MOUNT_POINT/CaseSensitiveProbe"
+          sudo touch "$MOUNT_POINT/CaseSensitiveProbe"
           test ! -e "$MOUNT_POINT/casesensitiveprobe"
           LEGACY_INFO="$LEGACY_INFO" python3 - <<'PY'
           import os
