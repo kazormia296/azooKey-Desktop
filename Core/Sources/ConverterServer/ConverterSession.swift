@@ -7,6 +7,12 @@ final class ConverterSession: SegmentManagerDelegate {
 
     let manager: SegmentsManager
     private var context = ConverterTextContext()
+    private var grimodexClientContext = GrimodexClientContext(
+        bundleIdentifier: nil,
+        secureInput: false
+    )
+    private var grimodexGenerationPin = GrimodexCompositionGenerationPin()
+    private(set) var compositionEpoch: UInt64 = 0
     var config = ConverterSessionConfig(
         aiBackendPreference: .off,
         openAIModelName: Config.OpenAiModelName.default,
@@ -16,10 +22,82 @@ final class ConverterSession: SegmentManagerDelegate {
     )
     var replaceSuggestions: [Candidate] = []
     var replaceSuggestionSelectionIndex: Int?
+    var isGrimodexSecureInput: Bool { grimodexClientContext.secureInput }
 
     init(manager: SegmentsManager) {
         self.manager = manager
         self.manager.delegate = self
+    }
+
+    @MainActor
+    func updateGrimodexClientContext(
+        _ context: GrimodexClientContext,
+        snapshot: GrimodexPublishedSnapshot
+    ) {
+        guard context.generation > grimodexClientContext.generation
+            || context == grimodexClientContext else {
+            return
+        }
+        if grimodexClientContext != context {
+            compositionEpoch &+= 1
+        }
+        grimodexClientContext = context
+        let revision = grimodexRevision(snapshot: snapshot)
+        if context.secureInput {
+            if let revoked = grimodexGenerationPin.revokeImmediately(revision) {
+                manager.applyGrimodexRevision(revoked)
+            }
+            // Apply the learning guard before stopping so a secure-input transition
+            // cannot commit the preceding composition into converter memory.
+            manager.stopComposition()
+            clearReplaceSuggestions()
+        } else if let revision = grimodexGenerationPin.observe(revision) {
+            manager.applyGrimodexRevision(revision)
+        }
+    }
+
+    @MainActor
+    func beginGrimodexComposition(snapshot: GrimodexPublishedSnapshot) {
+        if !grimodexGenerationPin.isComposing {
+            compositionEpoch &+= 1
+        }
+        if let revision = grimodexGenerationPin.beginComposition(
+            latest: grimodexRevision(snapshot: snapshot)
+        ) {
+            manager.applyGrimodexRevision(revision)
+        }
+    }
+
+    @MainActor
+    func endGrimodexComposition(snapshot: GrimodexPublishedSnapshot) {
+        let wasComposing = grimodexGenerationPin.isComposing
+        if let revision = grimodexGenerationPin.endComposition(
+            latest: grimodexRevision(snapshot: snapshot)
+        ) {
+            manager.applyGrimodexRevision(revision)
+        }
+        if wasComposing {
+            compositionEpoch &+= 1
+        }
+    }
+
+    @MainActor
+    func refreshGrimodexRevision(snapshot: GrimodexPublishedSnapshot) {
+        if let revision = grimodexGenerationPin.observe(
+            grimodexRevision(snapshot: snapshot)
+        ) {
+            manager.applyGrimodexRevision(revision)
+        }
+    }
+
+    private func grimodexRevision(
+        snapshot: GrimodexPublishedSnapshot
+    ) -> GrimodexIntegrationRevision {
+        let decision = GrimodexScopePolicy.evaluate(
+            mode: Config.GrimodexScope().value,
+            context: grimodexClientContext
+        )
+        return GrimodexIntegrationRevision(snapshot: snapshot, decision: decision)
     }
 
     func setContext(_ context: ConverterTextContext) {

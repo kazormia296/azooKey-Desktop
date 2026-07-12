@@ -31,6 +31,9 @@ extension azooKeyMacInputController {
 
     @MainActor
     func getContextAroundSelection(client: IMKTextInput, selectedRange: NSRange, contextLength: Int = Constants.defaultContextLength) -> TextContext {
+        guard !IsSecureEventInputEnabled() else {
+            return TextContext(before: "", selected: "", after: "")
+        }
         // Get the selected text
         var actualRange = NSRange()
         let selectedText = client.string(from: selectedRange, actualRange: &actualRange) ?? ""
@@ -55,9 +58,9 @@ extension azooKeyMacInputController {
         var afterActualRange = NSRange()
         let afterText = (afterLength > 0) ? (client.string(from: afterRange, actualRange: &afterActualRange) ?? "") : ""
 
-        self.segmentsManager.appendDebugMessage("getContextAroundSelection: Before context: '\(beforeText)'")
-        self.segmentsManager.appendDebugMessage("getContextAroundSelection: Selected text: '\(selectedText)'")
-        self.segmentsManager.appendDebugMessage("getContextAroundSelection: After context: '\(afterText)'")
+        self.segmentsManager.appendDebugMessage(
+            "getContextAroundSelection: lengths=\(beforeText.count)/\(selectedText.count)/\(afterText.count)"
+        )
 
         return TextContext(before: beforeText, selected: selectedText, after: afterText)
     }
@@ -65,6 +68,11 @@ extension azooKeyMacInputController {
     @MainActor
     func showPromptInputWindow(initialPrompt: String? = nil) {
         self.segmentsManager.appendDebugMessage("showPromptInputWindow: Starting")
+
+        guard !IsSecureEventInputEnabled() else {
+            self.segmentsManager.appendDebugMessage("showPromptInputWindow: blocked by secure input")
+            return
+        }
 
         // Set flag to prevent recursive calls
         self.isPromptWindowVisible = true
@@ -92,7 +100,9 @@ extension azooKeyMacInputController {
             return
         }
 
-        self.segmentsManager.appendDebugMessage("showPromptInputWindow: Selected text: '\(selectedText)'")
+        self.segmentsManager.appendDebugMessage(
+            "showPromptInputWindow: Selected text length: \(selectedText.count)"
+        )
         self.segmentsManager.appendDebugMessage("showPromptInputWindow: Storing selected range for later use: \(selectedRange)")
 
         // Get context around selection
@@ -178,6 +188,9 @@ extension azooKeyMacInputController {
 
     @MainActor
     func triggerAiTranslation(initialPrompt: String) -> Bool {
+        guard !IsSecureEventInputEnabled() else {
+            return false
+        }
         let aiBackendEnabled = Config.AIBackendPreference().value != .off
         guard aiBackendEnabled else {
             self.segmentsManager.appendDebugMessage("AI translation ignored: AI backend is off")
@@ -197,7 +210,12 @@ extension azooKeyMacInputController {
 
     @MainActor
     func transformSelectedText(selectedText: String, prompt: String, beforeContext: String = "", afterContext: String = "") {
-        self.segmentsManager.appendDebugMessage("transformSelectedText: Starting with text '\(selectedText)' and prompt '\(prompt)'")
+        guard !IsSecureEventInputEnabled() else {
+            return
+        }
+        self.segmentsManager.appendDebugMessage(
+            "transformSelectedText: Starting with text length \(selectedText.count)"
+        )
 
         let aiBackend = Config.AIBackendPreference().value
         guard aiBackend != .off else {
@@ -208,90 +226,121 @@ extension azooKeyMacInputController {
         self.segmentsManager.appendDebugMessage("transformSelectedText: AI backend is enabled (\(aiBackend.rawValue)), starting request")
 
         Task {
-            do {
-                // Create custom prompt for text transformation with context
-                var systemPrompt = """
-                Transform the given text according to the user's instructions.
-                Return only the transformed text without any additional explanation or formatting.
-                """
+            await self.performSelectedTextTransformation(
+                selectedText: selectedText,
+                prompt: prompt,
+                beforeContext: beforeContext,
+                afterContext: afterContext,
+                preference: aiBackend
+            )
+        }
+    }
 
-                // Add context if available
-                if !beforeContext.isEmpty || !afterContext.isEmpty {
-                    systemPrompt += "\n\nContext information:"
-                    if !beforeContext.isEmpty {
-                        systemPrompt += "\nText before: ...\(beforeContext)"
-                    }
-                    systemPrompt += "\nText to transform: \(selectedText)"
-                    if !afterContext.isEmpty {
-                        systemPrompt += "\nText after: \(afterContext)..."
-                    }
-                } else {
-                    systemPrompt += "\n\nText to transform: \(selectedText)"
-                }
+    @MainActor
+    private func performSelectedTextTransformation(
+        selectedText: String,
+        prompt: String,
+        beforeContext: String,
+        afterContext: String,
+        preference: Config.AIBackendPreference.Value
+    ) async {
+        do {
+            let systemPrompt = self.makeTransformationPrompt(
+                selectedText: selectedText,
+                prompt: prompt,
+                beforeContext: beforeContext,
+                afterContext: afterContext
+            )
+            self.segmentsManager.appendDebugMessage("transformSelectedText: Created system prompt")
 
-                systemPrompt += "\n\nUser instructions: \(prompt)"
-
-                await MainActor.run {
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: Created system prompt")
-                }
-
-                let backend: AIBackend
-                switch aiBackend {
-                case .foundationModels:
-                    backend = .foundationModels
-                case .openAI:
-                    backend = .openAI
-                case .off:
-                    return
-                }
-
-                let apiKey = Config.OpenAiApiKey().value
-                if backend == .openAI {
-                    guard !apiKey.isEmpty else {
-                        await MainActor.run {
-                            self.segmentsManager.appendDebugMessage("transformSelectedText: No OpenAI API key configured")
-                        }
-                        return
-                    }
-                }
-
-                await MainActor.run {
-                    let message = backend == .openAI
-                        ? "transformSelectedText: API key found, making request"
-                        : "transformSelectedText: Using Foundation Models, making request"
-                    self.segmentsManager.appendDebugMessage(message)
-                }
-
-                let modelName = Config.OpenAiModelName().value
-                let result = try await AIClient.sendTextTransformRequest(
-                    systemPrompt,
-                    backend: backend,
-                    modelName: modelName,
-                    apiKey: apiKey,
-                    apiEndpoint: self.endpoint,
-                    logger: { [weak self] message in
-                        self?.segmentsManager.appendDebugMessage(message)
-                    }
-                )
-
-                await MainActor.run {
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: API request completed, result: \(result)")
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: Result obtained: '\(result)'")
-                    // Note: This method lacks the stored range information.
-                    // Text replacement should be handled by showPromptInputWindow instead.
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: Note - This path should not be used for text replacement")
-                }
-            } catch {
-                await MainActor.run {
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: Error occurred: \(error)")
-                }
+            guard let backend = self.resolveAIBackend(preference) else {
+                return
             }
+            let apiKey = Config.OpenAiApiKey().value
+            if backend == .openAI && apiKey.isEmpty {
+                self.segmentsManager.appendDebugMessage(
+                    "transformSelectedText: No OpenAI API key configured"
+                )
+                return
+            }
+
+            let message = backend == .openAI
+                ? "transformSelectedText: API key found, making request"
+                : "transformSelectedText: Using Foundation Models, making request"
+            self.segmentsManager.appendDebugMessage(message)
+
+            let result = try await AIClient.sendTextTransformRequest(
+                systemPrompt,
+                backend: backend,
+                modelName: Config.OpenAiModelName().value,
+                apiKey: apiKey,
+                apiEndpoint: self.endpoint,
+                logger: { [weak self] message in
+                    self?.segmentsManager.appendDebugMessage(message)
+                }
+            )
+            self.segmentsManager.appendDebugMessage(
+                "transformSelectedText: API request completed, result length: \(result.count)"
+            )
+            // Note: This method lacks the stored range information.
+            // Text replacement should be handled by showPromptInputWindow instead.
+            self.segmentsManager.appendDebugMessage(
+                "transformSelectedText: Note - This path should not be used for text replacement"
+            )
+        } catch {
+            self.segmentsManager.appendDebugMessage(
+                "transformSelectedText: Error occurred: \(error)"
+            )
+        }
+    }
+
+    private func makeTransformationPrompt(
+        selectedText: String,
+        prompt: String,
+        beforeContext: String,
+        afterContext: String
+    ) -> String {
+        var systemPrompt = """
+        Transform the given text according to the user's instructions.
+        Return only the transformed text without any additional explanation or formatting.
+        """
+        if !beforeContext.isEmpty || !afterContext.isEmpty {
+            systemPrompt += "\n\nContext information:"
+            if !beforeContext.isEmpty {
+                systemPrompt += "\nText before: ...\(beforeContext)"
+            }
+            systemPrompt += "\nText to transform: \(selectedText)"
+            if !afterContext.isEmpty {
+                systemPrompt += "\nText after: \(afterContext)..."
+            }
+        } else {
+            systemPrompt += "\n\nText to transform: \(selectedText)"
+        }
+        systemPrompt += "\n\nUser instructions: \(prompt)"
+        return systemPrompt
+    }
+
+    private func resolveAIBackend(
+        _ preference: Config.AIBackendPreference.Value
+    ) -> AIBackend? {
+        switch preference {
+        case .foundationModels:
+            return .foundationModels
+        case .openAI:
+            return .openAI
+        case .off:
+            return nil
         }
     }
 
     @MainActor
     func replaceSelectedText(with newText: String, usingRange storedRange: NSRange) {
-        self.segmentsManager.appendDebugMessage("replaceSelectedText: Starting with new text: '\(newText)'")
+        guard !IsSecureEventInputEnabled() else {
+            return
+        }
+        self.segmentsManager.appendDebugMessage(
+            "replaceSelectedText: Starting with new text length: \(newText.count)"
+        )
         self.segmentsManager.appendDebugMessage("replaceSelectedText: Using stored range: \(storedRange)")
 
         guard let client = self.client() else {

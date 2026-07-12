@@ -101,6 +101,27 @@ import Testing
     #expect(!roundTripConfig.includeContextInAITransform)
 }
 
+@Test func converterServerClientContextCommandRoundTrips() throws {
+    let context = GrimodexClientContext(
+        bundleIdentifier: "com.miyakey.grimodex",
+        secureInput: true
+    )
+    let command = ConverterServerCommand.session(
+        sessionID: "session-1",
+        command: .updateClientContext(context)
+    )
+    let roundTrip = try ConverterServerCodec.decodeCommand(
+        from: ConverterServerCodec.encode(command)
+    )
+
+    guard case .session(let sessionID, .updateClientContext(let roundTripContext)) = roundTrip else {
+        Issue.record("Expected updateClientContext command after round trip, got \(roundTrip)")
+        return
+    }
+    #expect(sessionID == "session-1")
+    #expect(roundTripContext == context)
+}
+
 @Test func converterServerReplaceSuggestionCommandsRoundTrip() throws {
     let request = ConverterServerCommand.session(
         sessionID: "session-1",

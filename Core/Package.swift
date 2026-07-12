@@ -69,8 +69,14 @@ let package = Package(
     products: products,
     dependencies: [
         .package(url: "https://github.com/azooKey/AzooKeyKanaKanjiConverter", revision: "bbef9d2d99a2e9e69ac3f7e2e07b08474de59a81", traits: kanaKanjiConverterTraits),
-        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
-        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.0")
+        .package(
+            url: "https://github.com/apple/swift-crypto.git",
+            revision: "95ba0316a9b733e92bb6b071255ff46263bbe7dc" // 3.15.1
+        ),
+        .package(
+            url: "https://github.com/weichsel/ZIPFoundation.git",
+            revision: "22787ffb59de99e5dc1fbfe80b19c97a904ad48d" // 0.9.20
+        )
     ],
     targets: targets
 )

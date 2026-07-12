@@ -37,6 +37,9 @@ extension azooKeyMacInputController {
     }
 
     @MainActor @objc func performTransformSelectedText(_ sender: Any) {
+        guard !IsSecureEventInputEnabled() else {
+            return
+        }
         let aiBackendEnabled = Config.AIBackendPreference().value != .off
         self.updateTransformSelectedTextMenuItemTitle(aiBackendEnabled: aiBackendEnabled)
         guard aiBackendEnabled else {
@@ -72,6 +75,9 @@ extension azooKeyMacInputController {
     }
 
     private func canPerformTransformSelectedText(client: IMKTextInput?) -> Bool {
+        guard !IsSecureEventInputEnabled() else {
+            return false
+        }
         guard !self.isPromptWindowVisible else {
             return false
         }
@@ -87,7 +93,7 @@ extension azooKeyMacInputController {
     }
 
     @objc func openGitHubRepository(_ sender: Any) {
-        guard let url = URL(string: "https://github.com/azooKey/azooKey-Desktop") else {
+        guard let url = URL(string: "https://github.com/kazormia296/azooKey-Desktop") else {
             return
         }
         NSWorkspace.shared.open(url)

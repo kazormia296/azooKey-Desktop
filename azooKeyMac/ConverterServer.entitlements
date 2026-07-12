@@ -2,9 +2,19 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.dev.ensan.inputmethod.azooKeyMac</string>
+		<string>group.com.miyakey.grimodex.inputmethod</string>
+	</array>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+	<array>
+		<string>/Library/Application Support/com.miyakey.grimodex/ime/</string>
+	</array>
+	<key>com.apple.security.temporary-exception.mach-register.global-name</key>
+	<array>
+		<string>com.miyakey.grimodex.inputmethod.ConverterServer</string>
 	</array>
 </dict>
 </plist>

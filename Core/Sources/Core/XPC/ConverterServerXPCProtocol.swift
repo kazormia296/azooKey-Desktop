@@ -57,6 +57,9 @@ public enum ConverterSessionCommand: Codable, Sendable {
     /// API key など、Client が実行時に渡すセッション設定を更新する。
     case updateConfig(ConverterSessionConfig)
 
+    /// Client application と secure-input 状態を更新し、Grimodex連携scopeを再評価する。
+    case updateClientContext(GrimodexClientContext)
+
     /// 1つのキーイベントを処理し、状態 snapshot と Client 側で実行する副作用を返す。
     case handleKeyEvent(ConverterKeyEventRequest)
 

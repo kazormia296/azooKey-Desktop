@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>GrimodexAppGroupIdentifier</key>
+	<string>group.com.miyakey.grimodex.inputmethod</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>ComponentInputModeDict</key>
@@ -16,7 +18,7 @@
 			<key>com.apple.inputmethod.Roman</key>
 			<dict>
 				<key>TISInputSourceID</key>
-				<string>dev.ensan.inputmethod.azooKeyMac.Roman</string>
+				<string>com.miyakey.grimodex.inputmethod.Roman</string>
 				<key>tsInputModePrimaryInScriptKey</key>
 				<false/>
 				<key>tsInputModeScriptKey</key>
@@ -51,7 +53,7 @@
 				<key>tsInputModeKeyEquivalentKey</key>
 				<string>J</string>
 				<key>TISInputSourceID</key>
-				<string>dev.ensan.inputmethod.azooKeyMac.Japanese</string>
+				<string>com.miyakey.grimodex.inputmethod.Japanese</string>
 				<key>tsInputModePrimaryInScriptKey</key>
 				<true/>
 				<key>tsInputModeScriptKey</key>

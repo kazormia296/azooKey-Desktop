@@ -2,7 +2,7 @@ import Core
 import Foundation
 
 private enum ConverterServerXPC {
-    static let machServiceName = "dev.ensan.inputmethod.azooKeyMac.ConverterServer"
+    static let machServiceName = "com.miyakey.grimodex.inputmethod.ConverterServer"
 }
 
 @objc private protocol ConverterServerXPCProtocol {
@@ -212,7 +212,9 @@ final class ConverterServerClient {
     private func sendResolvedSync(_ command: ConverterServerCommand) -> ConverterServerResponse? {
         do {
             let data = try ConverterServerCodec.encode(command)
-            return waitForResult(timeout: syncTimeout) { [weak self] complete in
+            let response: ConverterServerResponse? = waitForResult(
+                timeout: syncTimeout
+            ) { [weak self] complete in
                 self?.remoteObjectProxy { proxy in
                     guard let proxy else {
                         complete(nil)
@@ -232,6 +234,11 @@ final class ConverterServerClient {
                     }
                 }
             }
+            if response == nil {
+                invalidateConnection()
+                recordReconnectFailure()
+            }
+            return response
         } catch {
             onLog?("ConverterServer encode failed: \(error.localizedDescription)")
             return nil

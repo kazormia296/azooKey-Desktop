@@ -8,6 +8,13 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     var segmentsManager: SegmentsManager
     let converterServerClient = ConverterServerClient()
     private var currentConverterView: ConverterSessionSnapshot?
+    private var lastGrimodexClientContext: GrimodexClientContext?
+    private var desiredGrimodexClientContext: GrimodexClientContext?
+    private var grimodexClientContextGeneration: UInt64 = 0
+    private var isRevokingSecureInput = false
+    private var localConversionBlocked = false
+    private var activationGeneration: UInt64 = 0
+    private var replaceSuggestionRequestGeneration: UInt64 = 0
     private(set) var inputState: InputState = .none
     private var inputLanguage: InputLanguage = .japanese
     var liveConversionEnabled: Bool {
@@ -156,17 +163,34 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         // ピン留めプロンプトのキャッシュを更新
         self.reloadPinnedPromptsCache()
         self.segmentsManager.activate()
-        self.converterServerClient.openSession { [weak self] sessionID in
-            guard let self, sessionID != nil else {
-                return
-            }
-            self.syncConverterServerSessionConfig()
-            self.converterServerClient.sendIfSessionOpen({ _ in .lifecycle(.activate) }, completion: { [weak self] response in
-                guard let self, let response else {
-                    return
-                }
+        let grimodexClientContext = (sender as? IMKTextInput).map {
+            self.makeGrimodexClientContext(client: $0)
+        } ?? GrimodexClientContext(bundleIdentifier: nil, secureInput: IsSecureEventInputEnabled())
+        if grimodexClientContext.secureInput,
+           let client = sender as? IMKTextInput {
+            self.revokeCompositionForSecureInput(client: client)
+        }
+        self.activationGeneration &+= 1
+        if grimodexClientContext.secureInput {
+            self.lastGrimodexClientContext = grimodexClientContext
+            self.converterServerClient.sendIfSessionOpen(
+                { _ in .updateClientContext(grimodexClientContext) },
+                completion: { _ in }
+            )
+        } else if self.converterServerClient.openSessionSync() != nil,
+           self.converterServerClient.sendIfSessionOpenSync({ _ in
+               .updateClientContext(grimodexClientContext)
+           }) != nil {
+            self.lastGrimodexClientContext = grimodexClientContext
+            self.restoreLocalConversionAfterSecureInput()
+            _ = self.syncConverterServerSessionConfigSync()
+            if let response = self.converterServerClient.sendIfSessionOpenSync({ _ in
+                .lifecycle(.activate)
+            }) {
                 self.currentConverterView = response.snapshot
-            })
+            }
+        } else if let client = sender as? IMKTextInput {
+            self.clearClientComposition(client: client)
         }
 
         if let client = sender as? IMKTextInput {
@@ -187,6 +211,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
 
     @MainActor
     override func deactivateServer(_ sender: Any!) {
+        self.activationGeneration &+= 1
         self.segmentsManager.deactivate()
         self.converterServerClient.sendIfSessionOpen({ _ in .lifecycle(.deactivate) }, completion: { _ in })
         self.currentConverterView = nil
@@ -198,7 +223,20 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     }
 
     @MainActor
+    override func inputControllerWillClose() {
+        self.activationGeneration &+= 1
+        self.converterServerClient.closeSession()
+        self.lastGrimodexClientContext = nil
+        self.desiredGrimodexClientContext = nil
+        super.inputControllerWillClose()
+    }
+
+    @MainActor
     override func commitComposition(_ sender: Any!) {
+        if let client = (sender as? IMKTextInput) ?? self.client(),
+           self.shouldBlockForGrimodexContext(client: client) {
+            return
+        }
         // Unicode入力モードの場合は状態だけリセットして終了
         // マウスクリック等でOSがMarkedTextを確定した場合、IME側からは消せないため
         if case .unicodeInput = self.inputState {
@@ -263,6 +301,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
             return false
         }
         guard event.type == .keyDown else {
+            return false
+        }
+
+        if self.shouldBlockForGrimodexContext(client: client) {
             return false
         }
 
@@ -405,7 +447,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
 
     @MainActor
     func requestPredictiveSuggestionWithConverterServer(client: IMKTextInput) -> Bool {
-        self.handleKeyEventWithConverterServer(
+        guard !self.shouldBlockForGrimodexContext(client: client) else {
+            return false
+        }
+        return self.handleKeyEventWithConverterServer(
             event: KeyEventCore(
                 modifierFlags: [.control],
                 characters: "s",
@@ -420,6 +465,9 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
     @MainActor
     // swiftlint:disable:next cyclomatic_complexity
     private func apply(_ effect: ConverterClientEffect, client: IMKTextInput) {
+        guard !self.shouldBlockForGrimodexContext(client: client) else {
+            return
+        }
         switch effect {
         case .insertText(let text):
             client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -476,12 +524,150 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         )
     }
 
-    private func syncConverterServerSessionConfig() {
-        let config = self.converterServerSessionConfig
-        self.converterServerClient.sendIfSessionOpen(
-            { _ in .updateConfig(config) },
-            completion: { _ in }
+    @MainActor
+    private func makeGrimodexClientContext(
+        client: IMKTextInput
+    ) -> GrimodexClientContext {
+        let bundleIdentifier = client.bundleIdentifier()
+        let secureInput = IsSecureEventInputEnabled()
+        if let desiredGrimodexClientContext,
+           desiredGrimodexClientContext.bundleIdentifier == bundleIdentifier,
+           desiredGrimodexClientContext.secureInput == secureInput {
+            return desiredGrimodexClientContext
+        }
+        grimodexClientContextGeneration &+= 1
+        let context = GrimodexClientContext(
+            bundleIdentifier: bundleIdentifier,
+            secureInput: secureInput,
+            generation: grimodexClientContextGeneration
         )
+        desiredGrimodexClientContext = context
+        return context
+    }
+
+    @MainActor
+    @discardableResult
+    private func syncGrimodexClientContext(
+        _ context: GrimodexClientContext
+    ) -> Bool {
+        if lastGrimodexClientContext == context,
+           converterServerClient.hasOpenSession {
+            return true
+        }
+        guard converterServerClient.canSendOrReconnect else {
+            return false
+        }
+        let response = converterServerClient.sendSync({ _ in
+            .updateClientContext(context)
+        })
+        if response != nil {
+            lastGrimodexClientContext = context
+        }
+        return response != nil
+    }
+
+    @MainActor
+    @discardableResult
+    func shouldBlockForGrimodexContext(client: IMKTextInput) -> Bool {
+        let context = makeGrimodexClientContext(client: client)
+        if context.secureInput {
+            revokeCompositionForSecureInput(client: client)
+            if lastGrimodexClientContext != context {
+                // Secure input must never wait for XPC. An existing session is
+                // revoked best-effort; a later nonsecure event synchronizes
+                // before any converter command is allowed.
+                lastGrimodexClientContext = context
+                converterServerClient.sendIfSessionOpen(
+                    { _ in .updateClientContext(context) },
+                    completion: { _ in }
+                )
+            }
+            return true
+        }
+
+        guard syncGrimodexClientContext(context) else {
+            localConversionBlocked = true
+            segmentsManager.applyGrimodexRevision(
+                GrimodexIntegrationRevision(
+                    generation: 0,
+                    payload: nil,
+                    allowsLearning: false,
+                    secureInput: false
+                )
+            )
+            clearClientComposition(client: client)
+            return true
+        }
+        restoreLocalConversionAfterSecureInput()
+        return false
+    }
+
+    @MainActor
+    private func revokeCompositionForSecureInput(client: IMKTextInput) {
+        guard !isRevokingSecureInput else {
+            return
+        }
+        isRevokingSecureInput = true
+        defer { isRevokingSecureInput = false }
+        localConversionBlocked = true
+        let revoked = GrimodexIntegrationRevision(
+            generation: 0,
+            payload: nil,
+            allowsLearning: false,
+            secureInput: true
+        )
+        segmentsManager.applyGrimodexRevision(revoked)
+        clearClientComposition(client: client)
+    }
+
+    @MainActor
+    private func clearClientComposition(client: IMKTextInput) {
+        replaceSuggestionRequestGeneration &+= 1
+        segmentsManager.stopComposition()
+        currentConverterView = nil
+        inputState = .none
+        predictionHideWorkItem?.cancel()
+        predictionHideWorkItem = nil
+        lastPredictionCandidates = []
+        lastPredictionUpdateTime = 0
+
+        candidatesViewController.updateCandidatePresentations(
+            [],
+            selectionIndex: nil,
+            cursorLocation: .zero
+        )
+        candidatesWindow.setIsVisible(false)
+        candidatesWindow.orderOut(nil)
+        predictionWindow.setIsVisible(false)
+        predictionWindow.orderOut(nil)
+        replaceSuggestionsViewController.updateCandidatePresentations(
+            [],
+            selectionIndex: nil,
+            cursorLocation: .zero
+        )
+        replaceSuggestionWindow.setIsVisible(false)
+        replaceSuggestionWindow.orderOut(nil)
+        client.setMarkedText(
+            NSAttributedString(string: ""),
+            selectionRange: NSRange(location: 0, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+    }
+
+    @MainActor
+    private func restoreLocalConversionAfterSecureInput() {
+        guard localConversionBlocked else {
+            return
+        }
+        segmentsManager.applyGrimodexRevision(
+            GrimodexIntegrationRevision(
+                generation: 0,
+                payload: nil,
+                allowsLearning: true,
+                secureInput: false
+            )
+        )
+        localConversionBlocked = false
     }
 
     @discardableResult
@@ -506,10 +692,10 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         client.overrideKeyboard(withKeyboardNamed: Config.KeyboardLayout().value.layoutIdentifier)
         switch language {
         case .english:
-            client.selectMode("dev.ensan.inputmethod.azooKeyMac.Roman")
+            client.selectMode("com.miyakey.grimodex.inputmethod.Roman")
             self.segmentsManager.stopJapaneseInput()
         case .japanese:
-            client.selectMode("dev.ensan.inputmethod.azooKeyMac.Japanese")
+            client.selectMode("com.miyakey.grimodex.inputmethod.Japanese")
         }
     }
 
@@ -790,15 +976,17 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
 extension azooKeyMacInputController: CandidatesViewControllerDelegate {
     func candidateSubmitted() {
         Task { @MainActor in
+            guard let client = self.client(),
+                  !self.shouldBlockForGrimodexContext(client: client) else {
+                return
+            }
             if self.currentConverterView != nil {
                 if let response = self.converterServerClient.sendIfSessionOpenSync({ _ in
                     .candidate(.submitSelectedCandidate(context: self.currentConverterTextContext()))
                 }) {
                     self.currentConverterView = response.snapshot
-                    if let client = self.client() {
-                        for effect in response.effects {
-                            self.apply(effect, client: client)
-                        }
+                    for effect in response.effects {
+                        self.apply(effect, client: client)
                     }
                     self.inputState = response.inputState.inputState
                     self.refreshConverterViewForCurrentInputState()
@@ -813,6 +1001,10 @@ extension azooKeyMacInputController: CandidatesViewControllerDelegate {
 
     func candidateSelectionChanged(_ row: Int) {
         Task { @MainActor in
+            guard let client = self.client(),
+                  !self.shouldBlockForGrimodexContext(client: client) else {
+                return
+            }
             if self.currentConverterView != nil,
                let response = self.converterServerClient.sendIfSessionOpenSync({ _ in
                 .candidate(.selectCandidate(index: row))
@@ -827,23 +1019,34 @@ extension azooKeyMacInputController: CandidatesViewControllerDelegate {
 
 extension azooKeyMacInputController: SegmentManagerDelegate {
     private func currentConverterTextContext() -> ConverterTextContext {
-        ConverterTextContext(
+        guard !IsSecureEventInputEnabled() else {
+            return ConverterTextContext()
+        }
+        return ConverterTextContext(
             leftSideContext: self.getLeftSideContext(),
             rightSideContext: self.getRightSideContext()
         )
     }
 
     func getLeftSideContext(maxCount: Int = ConverterTextContext.transportCharacterLimit) -> String? {
+        guard !IsSecureEventInputEnabled() else {
+            return nil
+        }
         let endIndex = self.contextRange().location
         let leftRange = NSRange(location: max(endIndex - maxCount, 0), length: min(endIndex, maxCount))
         var actual = NSRange()
         // 同じ行の文字のみコンテキストに含める
         let leftSideContext = self.client().string(from: leftRange, actualRange: &actual)
-        self.segmentsManager.appendDebugMessage("\(#function): leftSideContext=\(leftSideContext ?? "nil")")
+        self.segmentsManager.appendDebugMessage(
+            "\(#function): length=\(leftSideContext?.count ?? 0)"
+        )
         return leftSideContext
     }
 
     func getRightSideContext(maxCount: Int = ConverterTextContext.transportCharacterLimit) -> String? {
+        guard !IsSecureEventInputEnabled() else {
+            return nil
+        }
         let range = self.contextRange()
         let startIndex = range.location + range.length
         let documentLength = self.client().length()
@@ -853,7 +1056,9 @@ extension azooKeyMacInputController: SegmentManagerDelegate {
         let rightRange = NSRange(location: startIndex, length: min(documentLength - startIndex, maxCount))
         var actual = NSRange()
         let rightSideContext = self.client().string(from: rightRange, actualRange: &actual)
-        self.segmentsManager.appendDebugMessage("\(#function): rightSideContext=\(rightSideContext ?? "nil")")
+        self.segmentsManager.appendDebugMessage(
+            "\(#function): length=\(rightSideContext?.count ?? 0)"
+        )
         return rightSideContext
     }
 
@@ -872,6 +1077,10 @@ extension azooKeyMacInputController: SegmentManagerDelegate {
 
 extension azooKeyMacInputController: ReplaceSuggestionsViewControllerDelegate {
     @MainActor func replaceSuggestionSelectionChanged(_ row: Int) {
+        guard let client = self.client(),
+              !self.shouldBlockForGrimodexContext(client: client) else {
+            return
+        }
         guard self.currentConverterView?.replaceSuggestionSelectionIndex != row else {
             return
         }
@@ -898,6 +1107,11 @@ extension azooKeyMacInputController {
     @MainActor func requestReplaceSuggestion() {
         self.segmentsManager.appendDebugMessage("requestReplaceSuggestion: 開始")
 
+        guard let client = self.client(),
+              !self.shouldBlockForGrimodexContext(client: client) else {
+            return
+        }
+
         // リクエスト開始時に前回の候補をクリアし、ウィンドウを非表示にする
         self.replaceSuggestionsViewController.updateCandidatePresentations([], selectionIndex: nil, cursorLocation: .zero)
         self.replaceSuggestionWindow.setIsVisible(false)
@@ -911,11 +1125,18 @@ extension azooKeyMacInputController {
             self.segmentsManager.appendDebugMessage("requestReplaceSuggestion: skipped because session config sync failed")
             return
         }
+        self.replaceSuggestionRequestGeneration &+= 1
+        let requestGeneration = self.replaceSuggestionRequestGeneration
+        let activationGeneration = self.activationGeneration
         self.converterServerClient.sendIfSessionOpen(
             { _ in .replaceSuggestion(.request(context: self.currentConverterTextContext())) },
             completion: { [weak self] response in
                 Task { @MainActor in
                     guard let self else {
+                        return
+                    }
+                    guard self.activationGeneration == activationGeneration,
+                          self.replaceSuggestionRequestGeneration == requestGeneration else {
                         return
                     }
                     guard let response else {
@@ -943,16 +1164,18 @@ extension azooKeyMacInputController {
     }
 
     @MainActor func submitSelectedSuggestionCandidate() {
+        guard let client = self.client(),
+              !self.shouldBlockForGrimodexContext(client: client) else {
+            return
+        }
         guard let response = self.converterServerClient.sendIfSessionOpenSync({ _ in
             .replaceSuggestion(.submitSelectedReplaceSuggestion)
         }) else {
             return
         }
         self.currentConverterView = response.snapshot
-        if let client = self.client() {
-            for effect in response.effects {
-                self.apply(effect, client: client)
-            }
+        for effect in response.effects {
+            self.apply(effect, client: client)
         }
         self.inputState = response.inputState.inputState
         self.refreshMarkedText()

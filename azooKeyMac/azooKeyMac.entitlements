@@ -6,15 +6,15 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.dev.ensan.inputmethod.azooKeyMac</string>
+		<string>group.com.miyakey.grimodex.inputmethod</string>
 	</array>
-	<key>com.apple.security.network.client</key>
+	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
 	<key>com.apple.security.temporary-exception.mach-register.global-name</key>
-	<string>$(PRODUCT_BUNDLE_IDENTIFIER)_Connection</string>
+	<string>com.miyakey.grimodex.inputmethod_Connection</string>
 	<key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
 	<array>
-		<string>dev.ensan.inputmethod.azooKeyMac.ConverterServer</string>
+		<string>com.miyakey.grimodex.inputmethod.ConverterServer</string>
 	</array>
 </dict>
 </plist>

@@ -61,6 +61,12 @@ public final class SegmentsManager {
     private var backspaceAdjustedPredictionCandidate: PredictionCandidate?
     private var backspaceTypoCorrectionLock: BackspaceTypoCorrectionLock?
 
+    private var grimodexDictionaryEntries: [DicdataElement] = []
+    private var grimodexConditions = GrimodexProjectConditions.empty
+    private var grimodexAllowsLearning = true
+    private var grimodexSecureInput = false
+    private var dynamicDictionaryImported = false
+
     public struct PredictionCandidate: Sendable, Equatable {
         public var displayText: String
         public var appendText: String
@@ -158,6 +164,9 @@ public final class SegmentsManager {
             versionDependentMode: .v3(
                 .init(
                     profile: Config.ZenzaiProfile().value,
+                    topic: self.grimodexConditions.topic,
+                    style: self.grimodexConditions.style,
+                    preference: self.grimodexConditions.preference,
                     leftSideContext: leftSideContext,
                     rightSideContext: rightSideContext,
                     enableAlignmentSeparator: true,
@@ -199,7 +208,9 @@ public final class SegmentsManager {
             keyboardLanguage: .ja_JP,
             englishCandidateInRoman2KanaInput: false,
             fullWidthRomanCandidate: true,
-            learningType: Config.Learning().value.learningType,
+            learningType: self.grimodexAllowsLearning && !self.grimodexSecureInput
+                ? Config.Learning().value.learningType
+                : .nothing,
             memoryDirectoryURL: self.azooKeyMemoryDir,
             sharedContainerURL: CompiledUserDictionaryStore.directoryURL(memoryDirectoryURL: self.azooKeyMemoryDir),
             textReplacer: .withDefaultEmojiDictionary(),
@@ -236,12 +247,31 @@ public final class SegmentsManager {
         self.backspaceTypoCorrectionLock = nil
         self.lastInputStyle = .direct
         self.zenzaiPersonalizationMode = self.getZenzaiPersonalizationMode()
+        self.dynamicDictionaryImported = false
+    }
+
+    /// Applies one normalized, scope-filtered Grimodex revision at a composition boundary.
+    @MainActor
+    public func applyGrimodexRevision(_ revision: GrimodexIntegrationRevision) {
+        self.grimodexDictionaryEntries = revision.payload?.dictionaryEntries.map(\.dictionaryElement) ?? []
+        self.grimodexConditions = revision.payload?.conditions ?? .empty
+        self.grimodexAllowsLearning = revision.allowsLearning
+        self.grimodexSecureInput = revision.secureInput
+        self.dynamicDictionaryImported = false
+
+        // Scope removal and secure-input revocation must not leave the previous
+        // project's entries resident until another key is pressed.
+        if revision.payload == nil {
+            self.kanaKanjiConverter.importDynamicUserDictionary([])
+        }
     }
 
     @MainActor
     public func deactivate() {
         self.kanaKanjiConverter.stopComposition()
-        self.kanaKanjiConverter.commitUpdateLearningData()
+        if self.grimodexAllowsLearning && !self.grimodexSecureInput {
+            self.kanaKanjiConverter.commitUpdateLearningData()
+        }
         self.rawCandidates = nil
         self.didExperienceSegmentEdition = false
         self.lastOperation = .other
@@ -276,7 +306,9 @@ public final class SegmentsManager {
         self.rawCandidates = nil
         self.didExperienceSegmentEdition = false
         self.lastOperation = .other
-        self.kanaKanjiConverter.commitUpdateLearningData()
+        if self.grimodexAllowsLearning && !self.grimodexSecureInput {
+            self.kanaKanjiConverter.commitUpdateLearningData()
+        }
         self.shouldShowCandidateWindow = false
         self.selectionIndex = nil
         self.resetAdditionalCandidates()
@@ -402,7 +434,8 @@ public final class SegmentsManager {
 
     @MainActor
     public func forgetMemory() {
-        if let selectedCandidate {
+        if self.grimodexAllowsLearning && !self.grimodexSecureInput,
+           let selectedCandidate {
             self.kanaKanjiConverter.forgetMemory(selectedCandidate)
             self.appendDebugMessage("\(#function): forget \(selectedCandidate.data.map {$0.word})")
         }
@@ -515,8 +548,9 @@ public final class SegmentsManager {
             self.kanaKanjiConverter.stopComposition()
             return
         }
-        /// 日付・時刻変換を事前に入れておく
-        let dynamicShortcuts: [DicdataElement] =
+        if !self.dynamicDictionaryImported {
+            /// 日付・時刻変換を事前に入れておく
+            let dynamicShortcuts: [DicdataElement] =
             [
                 ("M/d", -18, DateTemplateLiteral.CalendarType.western),
                 ("yyyy/MM/dd", -18.1, .western),
@@ -545,7 +579,12 @@ public final class SegmentsManager {
                 .init(word: DateTemplateLiteral(format: "aK時mm分", type: .western, language: .japanese, delta: "0", deltaUnit: 1).export(), ruby: "イマ", cid: CIDData.固有名詞.cid, mid: MIDData.一般.mid, value: -18.2)
             ]
 
-        self.kanaKanjiConverter.importDynamicUserDictionary([], shortcuts: dynamicShortcuts)
+            self.kanaKanjiConverter.importDynamicUserDictionary(
+                self.grimodexDictionaryEntries,
+                shortcuts: dynamicShortcuts
+            )
+            self.dynamicDictionaryImported = true
+        }
 
         let leftSideContext = forcedLeftSideContext ?? self.getCleanLeftSideContext(maxCount: ContextLength.conversion)
         let rightSideContext = forcedRightSideContext ?? self.getCleanRightSideContext(maxCount: ContextLength.conversion)
@@ -569,8 +608,10 @@ public final class SegmentsManager {
 
     /// - note: 画面更新との整合性を保つため、この関数の実行前に左文脈を取得し、これを引数として与える
     @MainActor public func prefixCandidateCommited(_ candidate: Candidate, leftSideContext: String) {
-        self.kanaKanjiConverter.setCompletedData(candidate)
-        self.kanaKanjiConverter.updateLearningData(candidate)
+        if self.grimodexAllowsLearning && !self.grimodexSecureInput {
+            self.kanaKanjiConverter.setCompletedData(candidate)
+            self.kanaKanjiConverter.updateLearningData(candidate)
+        }
         self.composingText.prefixComplete(composingCount: candidate.composingCount)
 
         if !self.composingText.isEmpty {
