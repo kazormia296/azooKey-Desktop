@@ -17,7 +17,7 @@
 				<key>BundleOverwriteAction</key>
 				<string></string>
 				<key>RootRelativeBundlePath</key>
-				<string>azooKeyMac.app/Contents/Resources/AzooKeyKanakanjiConverter_KanaKanjiConverterModuleWithDefaultDictionary.bundle</string>
+				<string>azooKeyMac.app/Contents/Resources/AzooKeyKanaKanjiConverter_KanaKanjiConverterModuleWithDefaultDictionary.bundle</string>
 			</dict>
 		</array>
 		<key>RootRelativeBundlePath</key>
