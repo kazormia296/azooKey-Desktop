@@ -198,25 +198,35 @@ jobs:
           set -euo pipefail
           PKG="$GITHUB_WORKSPACE/build/package/grimodex-ime-macos-${GRIMODEX_IME_VERSION}.pkg"
           IMAGE="$RUNNER_TEMP/grimodex-ime-package-e2e.sparseimage"
+          CONTAINER_MOUNT="$RUNNER_TEMP/grimodex-ime-package-e2e-container"
           MOUNT_POINT="$RUNNER_TEMP/grimodex-ime-package-e2e-volume"
           LEGACY_INFO="$RUNNER_TEMP/grimodex-ime-legacy-info.plist"
           LEGACY_AGENT="$RUNNER_TEMP/grimodex-ime-legacy-agent.plist"
-          mkdir -p "$MOUNT_POINT"
+          mkdir -p "$CONTAINER_MOUNT" "$MOUNT_POINT"
           hdiutil create \
             -size 12g \
-            -fs APFSX \
+            -fs APFS \
             -type SPARSE \
-            -volname GrimodexPkgE2E \
+            -volname GrimodexPkgE2EContainer \
             "$IMAGE"
           hdiutil attach \
             -nobrowse \
             -owners on \
-            -mountpoint "$MOUNT_POINT" \
+            -mountpoint "$CONTAINER_MOUNT" \
             "$IMAGE"
           cleanup() {
-            hdiutil detach "$MOUNT_POINT" -force >/dev/null 2>&1 || true
+            hdiutil detach "$CONTAINER_MOUNT" -force >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+          CONTAINER_REFERENCE="$(
+            diskutil info -plist "$CONTAINER_MOUNT" | python3 -c \
+              'import plistlib, sys; print(plistlib.load(sys.stdin.buffer)["APFSContainerReference"])'
+          )"
+          sudo diskutil apfs addVolume \
+            "$CONTAINER_REFERENCE" \
+            'Case-sensitive APFS' \
+            GrimodexPkgE2E \
+            -mountpoint "$MOUNT_POINT"
 
           touch "$MOUNT_POINT/CaseSensitiveProbe"
           test ! -e "$MOUNT_POINT/casesensitiveprobe"
