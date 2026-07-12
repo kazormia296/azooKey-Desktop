@@ -220,7 +220,7 @@ jobs:
           trap cleanup EXIT
           CONTAINER_REFERENCE="$(
             diskutil info -plist "$CONTAINER_MOUNT" | python3 -c \
-              'import plistlib, sys; print(plistlib.load(sys.stdin.buffer)["APFSContainerReference"])'
+              'import plistlib, sys; print(plistlib.loads(sys.stdin.buffer.read())["APFSContainerReference"])'
           )"
           sudo diskutil apfs addVolume \
             "$CONTAINER_REFERENCE" \
