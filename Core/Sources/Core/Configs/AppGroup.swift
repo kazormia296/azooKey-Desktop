@@ -22,7 +22,7 @@ public enum AppGroup {
             if let data = try? Data(contentsOf: appInfoURL),
                let object = try? PropertyListSerialization.propertyList(
                    from: data,
-                   options: [],
+                   options: 0,
                    format: nil
                ),
                let info = object as? [String: Any],
