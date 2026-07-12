@@ -309,7 +309,7 @@ final class GrimodexDirectoryWatcher: @unchecked Sendable {
         }
 
         let events = registration.source.data
-        if !events.intersection(Self.invalidationMask).isEmpty {
+        if !events.isDisjoint(with: Self.invalidationMask) {
             removeWatch(for: role)
         }
         reconcileAfterEvent()

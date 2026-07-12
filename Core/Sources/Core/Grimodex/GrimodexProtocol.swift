@@ -338,8 +338,7 @@ private enum GrimodexProtocolValidator {
             return false
         }
         if let profile = project.profile,
-            !validText(profile, minimum: 0, maximum: GrimodexProtocolLimits.profileScalars)
-        {
+            !validText(profile, minimum: 0, maximum: GrimodexProtocolLimits.profileScalars) {
             return false
         }
         if let context = project.zenzaiContext {
@@ -549,8 +548,7 @@ private struct GrimodexDictionaryMapper {
             if let current = unique[key],
                 current.priority > entry.priority
                     || (current.priority == entry.priority
-                        && !utf8Less(entry.entryID, current.mapped.entryID))
-            {
+                        && !utf8Less(entry.entryID, current.mapped.entryID)) {
                 continue
             }
             unique[key] = Candidate(mapped: mapped, priority: entry.priority)
@@ -594,6 +592,10 @@ private struct GrimodexDictionaryMapper {
     }
 }
 
+private struct GrimodexLoadFailure: Error {
+    let diagnostic: GrimodexLoadDiagnostic
+}
+
 public struct GrimodexSnapshotLoader: Sendable {
     public let rootURL: URL
     private let fileReader: any GrimodexFileReading
@@ -608,87 +610,118 @@ public struct GrimodexSnapshotLoader: Sendable {
 
     public func load() -> GrimodexLoadResult {
         let stateURL = rootURL.appendingPathComponent("state.json")
-        let firstState: GrimodexWireState
+        do {
+            let firstState = try readState(
+                stateURL,
+                missingDiagnostic: .missingState,
+                invalidDiagnostic: .invalidState
+            )
+            guard let projectID = firstState.activeProjectID else {
+                return GrimodexLoadResult(payload: nil, diagnostic: .inactive)
+            }
+            let projectURL = rootURL
+                .appendingPathComponent("projects", isDirectory: true)
+                .appendingPathComponent("\(projectID).json")
+            let project = try readProject(projectURL, expectedProjectID: projectID)
+            try verifyStateUnchanged(firstState, at: stateURL)
+            return GrimodexLoadResult(
+                payload: GrimodexIntegrationPayload(
+                    projectID: project.projectID,
+                    projectName: project.projectName,
+                    dictionaryEntries: GrimodexDictionaryMapper.map(project.entries),
+                    conditions: projectConditions(for: project)
+                ),
+                diagnostic: .loaded
+            )
+        } catch let failure as GrimodexLoadFailure {
+            return GrimodexLoadResult(payload: nil, diagnostic: failure.diagnostic)
+        } catch {
+            return GrimodexLoadResult(payload: nil, diagnostic: .invalidState)
+        }
+    }
+
+    private func readState(
+        _ stateURL: URL,
+        missingDiagnostic: GrimodexLoadDiagnostic,
+        invalidDiagnostic: GrimodexLoadDiagnostic
+    ) throws -> GrimodexWireState {
         do {
             guard let data = try fileReader.read(
                 stateURL,
                 maxBytes: GrimodexProtocolLimits.stateBytes
             ) else {
-                return GrimodexLoadResult(payload: nil, diagnostic: .missingState)
+                throw GrimodexLoadFailure(diagnostic: missingDiagnostic)
             }
-            firstState = try JSONDecoder().decode(GrimodexWireState.self, from: data)
-            guard GrimodexProtocolValidator.validate(firstState) else {
-                return GrimodexLoadResult(payload: nil, diagnostic: .invalidState)
+            let state = try JSONDecoder().decode(GrimodexWireState.self, from: data)
+            guard GrimodexProtocolValidator.validate(state) else {
+                throw GrimodexLoadFailure(diagnostic: invalidDiagnostic)
             }
+            return state
+        } catch let failure as GrimodexLoadFailure {
+            throw failure
         } catch {
-            return GrimodexLoadResult(payload: nil, diagnostic: .invalidState)
+            throw GrimodexLoadFailure(diagnostic: invalidDiagnostic)
         }
+    }
 
-        guard let projectID = firstState.activeProjectID else {
-            return GrimodexLoadResult(payload: nil, diagnostic: .inactive)
-        }
-        let projectURL = rootURL
-            .appendingPathComponent("projects", isDirectory: true)
-            .appendingPathComponent("\(projectID).json")
-        let project: GrimodexWireProject
+    private func readProject(
+        _ projectURL: URL,
+        expectedProjectID: String
+    ) throws -> GrimodexWireProject {
         do {
             guard let data = try fileReader.read(
                 projectURL,
                 maxBytes: GrimodexProtocolLimits.projectBytes
             ) else {
-                return GrimodexLoadResult(payload: nil, diagnostic: .missingSnapshot)
+                throw GrimodexLoadFailure(diagnostic: .missingSnapshot)
             }
-            project = try JSONDecoder().decode(GrimodexWireProject.self, from: data)
-            guard GrimodexProtocolValidator.validate(project, expectedProjectID: projectID) else {
-                return GrimodexLoadResult(payload: nil, diagnostic: .invalidSnapshot)
-            }
-        } catch {
-            return GrimodexLoadResult(payload: nil, diagnostic: .invalidSnapshot)
-        }
-
-        do {
-            guard let data = try fileReader.read(
-                stateURL,
-                maxBytes: GrimodexProtocolLimits.stateBytes
+            let project = try JSONDecoder().decode(GrimodexWireProject.self, from: data)
+            guard GrimodexProtocolValidator.validate(
+                project,
+                expectedProjectID: expectedProjectID
             ) else {
-                return GrimodexLoadResult(payload: nil, diagnostic: .stateChangedDuringRead)
+                throw GrimodexLoadFailure(diagnostic: .invalidSnapshot)
             }
-            let secondState = try JSONDecoder().decode(GrimodexWireState.self, from: data)
-            guard
-                GrimodexProtocolValidator.validate(secondState),
-                secondState.activeProjectID == firstState.activeProjectID
-            else {
-                return GrimodexLoadResult(payload: nil, diagnostic: .stateChangedDuringRead)
-            }
+            return project
+        } catch let failure as GrimodexLoadFailure {
+            throw failure
         } catch {
-            return GrimodexLoadResult(payload: nil, diagnostic: .stateChangedDuringRead)
+            throw GrimodexLoadFailure(diagnostic: .invalidSnapshot)
         }
+    }
 
-        let conditions: GrimodexProjectConditions
+    private func verifyStateUnchanged(
+        _ firstState: GrimodexWireState,
+        at stateURL: URL
+    ) throws {
+        let secondState = try readState(
+            stateURL,
+            missingDiagnostic: .stateChangedDuringRead,
+            invalidDiagnostic: .stateChangedDuringRead
+        )
+        guard secondState.activeProjectID == firstState.activeProjectID else {
+            throw GrimodexLoadFailure(diagnostic: .stateChangedDuringRead)
+        }
+    }
+
+    private func projectConditions(
+        for project: GrimodexWireProject
+    ) -> GrimodexProjectConditions {
         if let context = project.zenzaiContext {
-            conditions = GrimodexProjectConditions(
+            return GrimodexProjectConditions(
                 topic: converterCondition(context.topic),
                 style: context.style.map(converterCondition),
                 preference: context.preference.map(converterCondition)
             )
-        } else if let profile = project.profile, !profile.isEmpty {
-            conditions = GrimodexProjectConditions(
+        }
+        if let profile = project.profile, !profile.isEmpty {
+            return GrimodexProjectConditions(
                 topic: converterCondition(profile),
                 style: nil,
                 preference: nil
             )
-        } else {
-            conditions = .empty
         }
-        return GrimodexLoadResult(
-            payload: GrimodexIntegrationPayload(
-                projectID: project.projectID,
-                projectName: project.projectName,
-                dictionaryEntries: GrimodexDictionaryMapper.map(project.entries),
-                conditions: conditions
-            ),
-            diagnostic: .loaded
-        )
+        return .empty
     }
 
     private func converterCondition(_ value: String) -> String {

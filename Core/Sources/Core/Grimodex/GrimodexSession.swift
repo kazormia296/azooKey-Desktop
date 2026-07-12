@@ -213,7 +213,7 @@ public struct GrimodexCompositionGenerationPin: Equatable, Sendable {
             revision.generation,
             applied?.generation,
             pending?.generation,
-            pinned?.generation,
+            pinned?.generation
         ].compactMap { $0 }.max() ?? revision.generation
         let revoked = GrimodexIntegrationRevision(
             generation: newestGeneration,

@@ -127,7 +127,7 @@ final class GrimodexMacRuntime: @unchecked Sendable {
             String(snapshot.generation),
             payload?.projectID ?? "",
             payload?.dictionaryEntries.first?.word ?? "",
-            payload?.conditions.topic ?? "",
+            payload?.conditions.topic ?? ""
         ].map {
             $0.replacingOccurrences(of: "\t", with: " ")
                 .replacingOccurrences(of: "\n", with: " ")

@@ -43,7 +43,9 @@ private final class ScriptedGrimodexFileReader: GrimodexFileReading, @unchecked 
         self.lock.lock()
         defer { self.lock.unlock() }
         if url.lastPathComponent == "state.json" {
-            guard !self.states.isEmpty else { return nil }
+            guard !self.states.isEmpty else {
+                return nil
+            }
             return self.states.removeFirst()
         }
         return self.project
