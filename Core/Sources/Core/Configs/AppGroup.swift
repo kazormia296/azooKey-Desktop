@@ -1,7 +1,39 @@
 import Foundation
 
 public enum AppGroup {
-    public static let azooKeyMacIdentifier = "group.dev.ensan.inputmethod.azooKeyMac"
+    public static var azooKeyMacIdentifier: String {
+        if let override = ProcessInfo.processInfo.environment[
+            "GRIMODEX_APP_GROUP_IDENTIFIER"
+        ], !override.isEmpty {
+            return override
+        }
+        if let configured = Bundle.main.object(
+            forInfoDictionaryKey: "GrimodexAppGroupIdentifier"
+        ) as? String,
+           !configured.isEmpty {
+            return configured
+        }
+        #if os(macOS)
+        if let executableURL = Bundle.main.executableURL {
+            let appInfoURL = executableURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Info.plist")
+            if let data = try? Data(contentsOf: appInfoURL),
+               let object = try? PropertyListSerialization.propertyList(
+                   from: data,
+                   options: [],
+                   format: nil
+               ),
+               let info = object as? [String: Any],
+               let configured = info["GrimodexAppGroupIdentifier"] as? String,
+               !configured.isEmpty {
+                return configured
+            }
+        }
+        #endif
+        return "group.com.miyakey.grimodex.inputmethod"
+    }
 
     #if os(macOS)
     public static func containerURL(fileManager: FileManager = .default) -> URL? {

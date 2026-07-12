@@ -9,6 +9,18 @@ extension ConverterServer {
         request: ConverterKeyEventRequest
     ) throws -> ConverterServerResponse {
         let session = try getSession(sessionID)
+        guard !session.isGrimodexSecureInput else {
+            return ConverterServerResponse(
+                handled: false,
+                effects: [.fallthroughToApplication],
+                inputState: .none,
+                inputLanguage: request.inputLanguage,
+                snapshot: .empty
+            )
+        }
+        session.beginGrimodexComposition(
+            snapshot: grimodexRuntime.snapshotManager.latest()
+        )
         session.setContext(request.context)
         Config.DebugPredictiveTyping().value = request.enablePredictiveTyping
         Config.DebugTypoCorrection().value = request.enableTypoCorrection
@@ -21,6 +33,9 @@ extension ConverterServer {
             inputState: request.inputState.inputState,
             typeBackSlash: request.typeBackSlash
            ) {
+            session.endGrimodexComposition(
+                snapshot: grimodexRuntime.snapshotManager.latest()
+            )
             return ConverterServerResponse(
                 effects: [.insertText(text)],
                 inputState: request.inputState,
@@ -53,6 +68,11 @@ extension ConverterServer {
             effects: &effects
         )
         guard actionHandled else {
+            if session.manager.isEmpty {
+                session.endGrimodexComposition(
+                    snapshot: grimodexRuntime.snapshotManager.latest()
+                )
+            }
             return ConverterServerResponse(
                 handled: false,
                 effects: effects,
@@ -67,6 +87,11 @@ extension ConverterServer {
             currentInputState: request.inputState.inputState,
             compositionIsEmpty: session.manager.isEmpty
         )
+        if session.manager.isEmpty {
+            session.endGrimodexComposition(
+                snapshot: grimodexRuntime.snapshotManager.latest()
+            )
+        }
         return ConverterServerResponse(
             handled: !effects.contains(.fallthroughToApplication),
             effects: effects,
@@ -267,7 +292,8 @@ extension ConverterServer {
 
     @MainActor
     func requestReplaceSuggestion(
-        session: ConverterSession
+        session: ConverterSession,
+        compositionEpoch: UInt64
     ) async throws {
         session.clearReplaceSuggestions()
         guard !session.manager.isEmpty else {
@@ -295,7 +321,8 @@ extension ConverterServer {
             apiKey: session.config.openAIAPIKey.value,
             apiEndpoint: session.config.openAIEndpoint.isEmpty ? Config.OpenAiApiEndpoint.default : session.config.openAIEndpoint
         )
-        guard session.manager.convertTarget == composingText else {
+        guard session.compositionEpoch == compositionEpoch,
+              session.manager.convertTarget == composingText else {
             return
         }
         session.replaceSuggestions = predictions.map { text in

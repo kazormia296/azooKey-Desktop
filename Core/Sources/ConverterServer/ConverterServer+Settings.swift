@@ -44,6 +44,17 @@ extension ConverterServer {
                 value: .bool(Config.LiveConversion().value)
             ),
             descriptor(
+                key: Config.GrimodexScope.key,
+                title: "プロジェクト語彙を使う範囲",
+                section: "Grimodex連携",
+                kind: .selector(options: [
+                    .init(title: "無効", value: .string(GrimodexScopeMode.off.rawValue)),
+                    .init(title: "Grimodexのみ", value: .string(GrimodexScopeMode.grimodexOnly.rawValue)),
+                    .init(title: "すべてのアプリ", value: .string(GrimodexScopeMode.allApplications.rawValue))
+                ]),
+                value: .string(Config.GrimodexScope().value.rawValue)
+            ),
+            descriptor(
                 key: Config.TypeBackSlash.key,
                 title: "円記号の代わりにバックスラッシュを入力",
                 section: "入力オプション",
@@ -229,6 +240,12 @@ extension ConverterServer {
             Config.AIBackendPreference().value = backend
         case Config.LiveConversion.key:
             Config.LiveConversion().value = try boolSettingValue(value, key: key)
+        case Config.GrimodexScope.key:
+            guard case .string(let rawValue) = value,
+                  let scope = GrimodexScopeMode(rawValue: rawValue) else {
+                throw ConverterServerError.invalidSettingValue(key)
+            }
+            Config.GrimodexScope().value = scope
         case Config.TypeBackSlash.key:
             Config.TypeBackSlash().value = try boolSettingValue(value, key: key)
         case Config.TypeHalfSpace.key:

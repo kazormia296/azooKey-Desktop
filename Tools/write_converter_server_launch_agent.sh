@@ -3,7 +3,7 @@ set -eu
 
 agent_path="$1"
 server_path="$2"
-service_name="${3:-dev.ensan.inputmethod.azooKeyMac.ConverterServer}"
+service_name="${3:-com.miyakey.grimodex.inputmethod.ConverterServer}"
 
 agent_dir="$(dirname "${agent_path}")"
 mkdir -p "${agent_dir}"
@@ -27,10 +27,6 @@ cat > "${agent_path}" <<PLIST
     <true/>
     <key>RunAtLoad</key>
     <true/>
-    <key>StandardOutPath</key>
-    <string>/tmp/${service_name}.stdout.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/${service_name}.stderr.log</string>
 </dict>
 </plist>
 PLIST

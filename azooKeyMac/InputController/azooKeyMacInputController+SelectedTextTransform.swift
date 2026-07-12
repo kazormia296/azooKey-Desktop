@@ -31,6 +31,9 @@ extension azooKeyMacInputController {
 
     @MainActor
     func getContextAroundSelection(client: IMKTextInput, selectedRange: NSRange, contextLength: Int = Constants.defaultContextLength) -> TextContext {
+        guard !IsSecureEventInputEnabled() else {
+            return TextContext(before: "", selected: "", after: "")
+        }
         // Get the selected text
         var actualRange = NSRange()
         let selectedText = client.string(from: selectedRange, actualRange: &actualRange) ?? ""
@@ -55,9 +58,9 @@ extension azooKeyMacInputController {
         var afterActualRange = NSRange()
         let afterText = (afterLength > 0) ? (client.string(from: afterRange, actualRange: &afterActualRange) ?? "") : ""
 
-        self.segmentsManager.appendDebugMessage("getContextAroundSelection: Before context: '\(beforeText)'")
-        self.segmentsManager.appendDebugMessage("getContextAroundSelection: Selected text: '\(selectedText)'")
-        self.segmentsManager.appendDebugMessage("getContextAroundSelection: After context: '\(afterText)'")
+        self.segmentsManager.appendDebugMessage(
+            "getContextAroundSelection: lengths=\(beforeText.count)/\(selectedText.count)/\(afterText.count)"
+        )
 
         return TextContext(before: beforeText, selected: selectedText, after: afterText)
     }
@@ -65,6 +68,11 @@ extension azooKeyMacInputController {
     @MainActor
     func showPromptInputWindow(initialPrompt: String? = nil) {
         self.segmentsManager.appendDebugMessage("showPromptInputWindow: Starting")
+
+        guard !IsSecureEventInputEnabled() else {
+            self.segmentsManager.appendDebugMessage("showPromptInputWindow: blocked by secure input")
+            return
+        }
 
         // Set flag to prevent recursive calls
         self.isPromptWindowVisible = true
@@ -92,7 +100,9 @@ extension azooKeyMacInputController {
             return
         }
 
-        self.segmentsManager.appendDebugMessage("showPromptInputWindow: Selected text: '\(selectedText)'")
+        self.segmentsManager.appendDebugMessage(
+            "showPromptInputWindow: Selected text length: \(selectedText.count)"
+        )
         self.segmentsManager.appendDebugMessage("showPromptInputWindow: Storing selected range for later use: \(selectedRange)")
 
         // Get context around selection
@@ -178,6 +188,9 @@ extension azooKeyMacInputController {
 
     @MainActor
     func triggerAiTranslation(initialPrompt: String) -> Bool {
+        guard !IsSecureEventInputEnabled() else {
+            return false
+        }
         let aiBackendEnabled = Config.AIBackendPreference().value != .off
         guard aiBackendEnabled else {
             self.segmentsManager.appendDebugMessage("AI translation ignored: AI backend is off")
@@ -197,7 +210,12 @@ extension azooKeyMacInputController {
 
     @MainActor
     func transformSelectedText(selectedText: String, prompt: String, beforeContext: String = "", afterContext: String = "") {
-        self.segmentsManager.appendDebugMessage("transformSelectedText: Starting with text '\(selectedText)' and prompt '\(prompt)'")
+        guard !IsSecureEventInputEnabled() else {
+            return
+        }
+        self.segmentsManager.appendDebugMessage(
+            "transformSelectedText: Starting with text length \(selectedText.count)"
+        )
 
         let aiBackend = Config.AIBackendPreference().value
         guard aiBackend != .off else {
@@ -275,8 +293,9 @@ extension azooKeyMacInputController {
                 )
 
                 await MainActor.run {
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: API request completed, result: \(result)")
-                    self.segmentsManager.appendDebugMessage("transformSelectedText: Result obtained: '\(result)'")
+                    self.segmentsManager.appendDebugMessage(
+                        "transformSelectedText: API request completed, result length: \(result.count)"
+                    )
                     // Note: This method lacks the stored range information.
                     // Text replacement should be handled by showPromptInputWindow instead.
                     self.segmentsManager.appendDebugMessage("transformSelectedText: Note - This path should not be used for text replacement")
@@ -291,7 +310,12 @@ extension azooKeyMacInputController {
 
     @MainActor
     func replaceSelectedText(with newText: String, usingRange storedRange: NSRange) {
-        self.segmentsManager.appendDebugMessage("replaceSelectedText: Starting with new text: '\(newText)'")
+        guard !IsSecureEventInputEnabled() else {
+            return
+        }
+        self.segmentsManager.appendDebugMessage(
+            "replaceSelectedText: Starting with new text length: \(newText.count)"
+        )
         self.segmentsManager.appendDebugMessage("replaceSelectedText: Using stored range: \(storedRange)")
 
         guard let client = self.client() else {

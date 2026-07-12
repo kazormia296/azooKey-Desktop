@@ -1,0 +1,361 @@
+name: Grimodex IME macOS Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v (for example, 0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: grimodex-ime-macos-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sign-notarize-package:
+    name: Sign, notarize, and package macOS IME
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 120
+    steps:
+      - name: Checkout consumer fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Fetch Git LFS objects in submodules
+        run: |
+          set -euo pipefail
+          git lfs install --local
+          git submodule foreach --recursive 'git lfs pull'
+          MODEL='azooKeyMac/Resources/gguf/ggml-model-Q5_K_M.gguf'
+          test -f "$MODEL"
+          test "$(wc -c < "$MODEL")" -gt 1000000
+          test "$(find azooKeyMac/Resources/base_n5_lm -type f -name '*.marisa' -size +1024c | wc -l | tr -d ' ')" -ge 4
+          ! grep -R -l -m 1 '^version https://git-lfs.github.com/spec/v1$' \
+            azooKeyMac/Resources/gguf \
+            azooKeyMac/Resources/base_n5_lm
+
+      - name: Select Xcode 16.3
+        run: |
+          set -euo pipefail
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_16.3*.app' | sort | head -n 1)"
+          if [ -z "$XCODE_PATH" ]; then
+            echo "::error::Xcode 16.3 is not installed on this runner." >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Resolve release version
+        id: version
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$MANUAL_VERSION"
+          fi
+          if [[ ! "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release version must be SemVer-like: $VERSION" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "marketing-version=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+
+      - name: Build unsigned Release app before loading signing credentials
+        env:
+          MARKETING_VERSION: ${{ steps.version.outputs.marketing-version }}
+        run: |
+          set -euo pipefail
+          rm -rf build/ReleaseDerivedData build/release
+          xcodebuild \
+            -project azooKeyMac.xcodeproj \
+            -scheme azooKeyMac \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/ReleaseDerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            MARKETING_VERSION="$MARKETING_VERSION" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            build
+
+          APP_PATH="$GITHUB_WORKSPACE/build/ReleaseDerivedData/Build/Products/Release/azooKeyMac.app"
+          HELPER_PATH="$APP_PATH/Contents/MacOS/ConverterServer"
+          test -d "$APP_PATH"
+          test -x "$HELPER_PATH"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "HELPER_PATH=$HELPER_PATH" >> "$GITHUB_ENV"
+
+      - name: Import Developer ID identities into a temporary keychain
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_INSTALLER_CERTIFICATE: ${{ secrets.APPLE_INSTALLER_CERTIFICATE }}
+          APPLE_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_INSTALLER_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          for required in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            APPLE_INSTALLER_CERTIFICATE \
+            APPLE_INSTALLER_CERTIFICATE_PASSWORD \
+            KEYCHAIN_PASSWORD \
+            APPLE_API_KEY_BASE64 \
+            APPLE_API_KEY \
+            APPLE_API_ISSUER \
+            APPLE_TEAM_ID; do
+            if [ -z "${!required}" ]; then
+              echo "::error::Required secret is empty: $required" >&2
+              exit 1
+            fi
+          done
+          if [[ ! "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error::APPLE_TEAM_ID must be a 10-character team identifier." >&2
+            exit 1
+          fi
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/grimodex-ime-signing.keychain-db"
+          APPLICATION_P12="$RUNNER_TEMP/developer-id-application.p12"
+          INSTALLER_P12="$RUNNER_TEMP/developer-id-installer.p12"
+          NOTARY_KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$APPLICATION_P12"
+          printf '%s' "$APPLE_INSTALLER_CERTIFICATE" | base64 --decode > "$INSTALLER_P12"
+          printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$NOTARY_KEY_PATH"
+          chmod 600 "$APPLICATION_P12" "$INSTALLER_P12" "$NOTARY_KEY_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$APPLICATION_P12" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security import "$INSTALLER_P12" \
+            -P "$APPLE_INSTALLER_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+
+          APP_SIGN_IDENTITY="$(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | awk -F'"' '/Developer ID Application/ { print $2; exit }'
+          )"
+          INSTALLER_SIGN_IDENTITY="$(
+            security find-identity -v -p basic "$KEYCHAIN_PATH" \
+              | awk -F'"' '/Developer ID Installer/ { print $2; exit }'
+          )"
+          if [ -z "$APP_SIGN_IDENTITY" ]; then
+            echo "::error::Developer ID Application identity was not found." >&2
+            exit 1
+          fi
+          if [ -z "$INSTALLER_SIGN_IDENTITY" ]; then
+            echo "::error::Developer ID Installer identity was not found." >&2
+            exit 1
+          fi
+
+          echo "SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "APP_SIGN_IDENTITY=$APP_SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "INSTALLER_SIGN_IDENTITY=$INSTALLER_SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "NOTARY_KEY_PATH=$NOTARY_KEY_PATH" >> "$GITHUB_ENV"
+          echo "APP_GROUP_ID=${APPLE_TEAM_ID}.com.miyakey.grimodex.inputmethod" >> "$GITHUB_ENV"
+
+      - name: Sign nested ConverterServer, then app
+        run: |
+          set -euo pipefail
+          APP_ENTITLEMENTS="$RUNNER_TEMP/grimodex-ime-app-signing-entitlements.plist"
+          HELPER_ENTITLEMENTS="$RUNNER_TEMP/grimodex-ime-helper-signing-entitlements.plist"
+          cp azooKeyMac/azooKeyMac.entitlements "$APP_ENTITLEMENTS"
+          cp azooKeyMac/ConverterServer.entitlements "$HELPER_ENTITLEMENTS"
+          /usr/libexec/PlistBuddy \
+            -c "Set :com.apple.security.application-groups:0 $APP_GROUP_ID" \
+            "$APP_ENTITLEMENTS"
+          /usr/libexec/PlistBuddy \
+            -c "Set :com.apple.security.application-groups:0 $APP_GROUP_ID" \
+            "$HELPER_ENTITLEMENTS"
+          plutil -replace GrimodexAppGroupIdentifier \
+            -string "$APP_GROUP_ID" \
+            "$APP_PATH/Contents/Info.plist"
+          codesign \
+            --force \
+            --sign "$APP_SIGN_IDENTITY" \
+            --keychain "$SIGNING_KEYCHAIN" \
+            --entitlements "$HELPER_ENTITLEMENTS" \
+            --options runtime \
+            --timestamp \
+            "$HELPER_PATH"
+          codesign \
+            --force \
+            --sign "$APP_SIGN_IDENTITY" \
+            --keychain "$SIGNING_KEYCHAIN" \
+            --entitlements "$APP_ENTITLEMENTS" \
+            --options runtime \
+            --timestamp \
+            "$APP_PATH"
+          GRIMODEX_VALIDATE_APP_GROUP=1 "$HELPER_PATH"
+
+      - name: Notarize and staple signed app
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APPLE_API_KEY" ] || [ -z "$APPLE_API_ISSUER" ]; then
+            echo "::error::APPLE_API_KEY and APPLE_API_ISSUER are required." >&2
+            exit 1
+          fi
+          APP_ZIP="$RUNNER_TEMP/grimodex-ime-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$APP_ZIP"
+          xcrun notarytool submit "$APP_ZIP" \
+            --key "$NOTARY_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          rm -f "$APP_ZIP"
+
+      - name: Build signed installer package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          Tools/build_grimodex_pkg.sh \
+            --app "$APP_PATH" \
+            --output build/release \
+            --version "$VERSION" \
+            --sign "$INSTALLER_SIGN_IDENTITY"
+          PKG_PATH="$GITHUB_WORKSPACE/build/release/grimodex-ime-macos-${VERSION}.pkg"
+          test -s "$PKG_PATH"
+          install -m 755 \
+            Tools/uninstall_grimodex_ime.sh \
+            build/release/uninstall-grimodex-ime.sh
+          echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple installer package
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          xcrun notarytool submit "$PKG_PATH" \
+            --key "$NOTARY_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait
+          xcrun stapler staple "$PKG_PATH"
+          xcrun stapler validate "$PKG_PATH"
+
+      - name: Verify signatures, notarization, and Gatekeeper assessment
+        run: |
+          set -euo pipefail
+          APP_ENTITLEMENTS="$RUNNER_TEMP/grimodex-ime-app-entitlements.plist"
+          HELPER_ENTITLEMENTS="$RUNNER_TEMP/grimodex-ime-helper-entitlements.plist"
+          codesign --verify --strict --verbose=4 "$HELPER_PATH"
+          codesign --verify --deep --strict --verbose=4 "$APP_PATH"
+          codesign -d --entitlements :- "$APP_PATH" > "$APP_ENTITLEMENTS"
+          codesign -d --entitlements :- "$HELPER_PATH" > "$HELPER_ENTITLEMENTS"
+          ! plutil -p "$APP_ENTITLEMENTS" | grep -F '$('
+          ! plutil -p "$APP_ENTITLEMENTS" | grep -F \
+            'com.apple.security.network.client'
+          ! plutil -p "$HELPER_ENTITLEMENTS" | grep -F \
+            'com.apple.security.network.client'
+          plutil -p "$APP_ENTITLEMENTS" \
+            | grep -F '"com.apple.security.app-sandbox" => true'
+          plutil -p "$HELPER_ENTITLEMENTS" \
+            | grep -F '"com.apple.security.app-sandbox" => true'
+          plutil -p "$APP_ENTITLEMENTS" \
+            | grep -F "\"com.apple.security.application-groups\" => ["
+          plutil -p "$APP_ENTITLEMENTS" | grep -F "  0 => \"$APP_GROUP_ID\""
+          plutil -p "$HELPER_ENTITLEMENTS" | grep -F "  0 => \"$APP_GROUP_ID\""
+          test "$(plutil -extract GrimodexAppGroupIdentifier raw "$APP_PATH/Contents/Info.plist")" = \
+            "$APP_GROUP_ID"
+          plutil -p "$APP_ENTITLEMENTS" \
+            | grep -F '"com.apple.security.temporary-exception.mach-register.global-name" => "com.miyakey.grimodex.inputmethod_Connection"'
+          codesign -dvvv "$HELPER_PATH" 2>&1 \
+            | grep -F 'Authority=Developer ID Application'
+          codesign -dvvv "$APP_PATH" 2>&1 \
+            | grep -F 'Authority=Developer ID Application'
+          codesign -dvvv "$APP_PATH" 2>&1 \
+            | grep -F "TeamIdentifier=${APP_GROUP_ID%%.*}"
+          xcrun stapler validate "$APP_PATH"
+          pkgutil --check-signature "$PKG_PATH" \
+            | grep -F 'Developer ID Installer'
+          xcrun stapler validate "$PKG_PATH"
+          spctl --assess --type execute --verbose=4 "$APP_PATH"
+          spctl --assess --type install --verbose=4 "$PKG_PATH"
+          (
+            cd build/release
+            package_name="$(basename "$PKG_PATH")"
+            shasum -a 256 "$package_name" > "$package_name.sha256"
+            shasum -a 256 uninstall-grimodex-ime.sh \
+              > uninstall-grimodex-ime.sh.sha256
+          )
+
+      - name: Remove signing material before artifact upload
+        run: |
+          set -euo pipefail
+          security default-keychain -d user \
+            -s "$HOME/Library/Keychains/login.keychain-db"
+          security list-keychains -d user \
+            -s "$HOME/Library/Keychains/login.keychain-db"
+          security delete-keychain "$SIGNING_KEYCHAIN"
+          rm -f \
+            "$RUNNER_TEMP/developer-id-application.p12" \
+            "$RUNNER_TEMP/developer-id-installer.p12" \
+            "$RUNNER_TEMP/AuthKey.p8" \
+            "$RUNNER_TEMP/grimodex-ime-app-signing-entitlements.plist" \
+            "$RUNNER_TEMP/grimodex-ime-helper-signing-entitlements.plist" \
+            "$RUNNER_TEMP/grimodex-ime-app-entitlements.plist" \
+            "$RUNNER_TEMP/grimodex-ime-helper-entitlements.plist"
+
+      - name: Upload notarized installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grimodex-ime-macos-${{ steps.version.outputs.version }}
+          path: |
+            build/release/grimodex-ime-macos-*.pkg
+            build/release/grimodex-ime-macos-*.pkg.sha256
+            build/release/uninstall-grimodex-ime.sh
+            build/release/uninstall-grimodex-ime.sh.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          set +e
+          security default-keychain -d user \
+            -s "$HOME/Library/Keychains/login.keychain-db"
+          security list-keychains -d user \
+            -s "$HOME/Library/Keychains/login.keychain-db"
+          security delete-keychain \
+            "$RUNNER_TEMP/grimodex-ime-signing.keychain-db"
+          rm -f \
+            "$RUNNER_TEMP/developer-id-application.p12" \
+            "$RUNNER_TEMP/developer-id-installer.p12" \
+            "$RUNNER_TEMP/AuthKey.p8" \
+            "$RUNNER_TEMP/grimodex-ime-app-signing-entitlements.plist" \
+            "$RUNNER_TEMP/grimodex-ime-helper-signing-entitlements.plist" \
+            "$RUNNER_TEMP/grimodex-ime-app-entitlements.plist" \
+            "$RUNNER_TEMP/grimodex-ime-helper-entitlements.plist"

@@ -1,0 +1,186 @@
+name: Grimodex IME Phase 5
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GRIMODEX_CONTRACT_COMMIT: 0734fe86726d4f0d696257f2c87231d3782d8596
+  GRIMODEX_IME_VERSION: 0.1.0
+
+jobs:
+  macos-contract-and-process-e2e:
+    name: macOS contract and real ConverterServer E2E
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout consumer fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Fetch Git LFS objects in submodules
+        run: |
+          set -euo pipefail
+          git lfs install --local
+          git submodule foreach --recursive 'git lfs pull'
+
+      - name: Select Xcode 16.3
+        run: |
+          set -euo pipefail
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_16.3*.app' | sort | head -n 1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Run Core contracts
+        run: swift test --package-path Core
+
+      - name: Build real ConverterServer
+        run: |
+          set -euo pipefail
+          swift build --package-path Core --configuration release --product ConverterServer
+          server_bin="$(swift build --package-path Core --configuration release --show-bin-path)/ConverterServer"
+          test -x "$server_bin"
+          echo "GRIMODEX_MACOS_IME_SERVER=$server_bin" >> "$GITHUB_ENV"
+
+      - name: Checkout pinned Grimodex reader contract
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: kazormia296/Grimodex
+          ref: ${{ env.GRIMODEX_CONTRACT_COMMIT }}
+          path: grimodex-consumer-e2e
+          submodules: false
+
+      - name: Run real writer-to-reader process E2E
+        run: >-
+          cargo test
+          --manifest-path grimodex-consumer-e2e/src-tauri/Cargo.toml
+          -p grimodex-db
+          --test macos_ime_server_e2e
+          -- --ignored --nocapture
+
+  unsigned-package-contract:
+    name: Unsigned app and pkg contract
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout consumer fork
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Fetch and verify model artifacts
+        run: |
+          set -euo pipefail
+          git lfs install --local
+          git submodule foreach --recursive 'git lfs pull'
+          MODEL='azooKeyMac/Resources/gguf/ggml-model-Q5_K_M.gguf'
+          test -f "$MODEL"
+          test "$(wc -c < "$MODEL")" -gt 1000000
+          test "$(find azooKeyMac/Resources/base_n5_lm -type f -name '*.marisa' -size +1024c | wc -l | tr -d ' ')" -ge 4
+          ! grep -R -l -m 1 '^version https://git-lfs.github.com/spec/v1$' \
+            azooKeyMac/Resources/gguf \
+            azooKeyMac/Resources/base_n5_lm
+
+      - name: Select Xcode 16.3
+        run: |
+          set -euo pipefail
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_16.3*.app' | sort | head -n 1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+
+      - name: Build and test the macOS target
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project azooKeyMac.xcodeproj \
+            -scheme azooKeyMac \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            -only-testing:azooKeyMacTests \
+            test
+          xcodebuild \
+            -project azooKeyMac.xcodeproj \
+            -scheme azooKeyMac \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            build
+
+      - name: Verify branded app and offline entitlements
+        run: |
+          set -euo pipefail
+          APP='build/DerivedData/Build/Products/Release/azooKeyMac.app'
+          test -d "$APP"
+          test -x "$APP/Contents/MacOS/ConverterServer"
+          test "$(plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist")" = \
+            'com.miyakey.grimodex.inputmethod'
+          ! plutil -p azooKeyMac/azooKeyMac.entitlements | grep -F \
+            'com.apple.security.network.client'
+          ! plutil -p azooKeyMac/ConverterServer.entitlements | grep -F \
+            'com.apple.security.network.client'
+          plutil -p azooKeyMac/azooKeyMac.entitlements \
+            | grep -F '"com.apple.security.temporary-exception.mach-register.global-name" => "com.miyakey.grimodex.inputmethod_Connection"'
+          plutil -p azooKeyMac/ConverterServer.entitlements \
+            | grep -F '"com.apple.security.app-sandbox" => true'
+
+      - name: Build and inspect unsigned pkg
+        run: |
+          set -euo pipefail
+          APP='build/DerivedData/Build/Products/Release/azooKeyMac.app'
+          Tools/build_grimodex_pkg.sh \
+            --app "$APP" \
+            --output build/package \
+            --version "$GRIMODEX_IME_VERSION"
+          PKG="build/package/grimodex-ime-macos-${GRIMODEX_IME_VERSION}.pkg"
+          test -s "$PKG"
+          pkgutil --expand-full "$PKG" build/package-expanded
+          test -d "$(find build/package-expanded -type d -path '*/Payload/azooKeyMac.app' -print -quit)"
+          test -x "$(find build/package-expanded -type f -path '*/Payload/azooKeyMac.app/Contents/MacOS/ConverterServer' -print -quit)"
+          package_info="$(find build/package-expanded -type f -name PackageInfo -print -quit)"
+          test -n "$package_info"
+          PACKAGE_INFO="$package_info" python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse(os.environ["PACKAGE_INFO"]).getroot()
+          bundle_id = "com.miyakey.grimodex.inputmethod"
+          assert root.attrib.get("identifier") == bundle_id
+          assert root.attrib.get("relocatable") == "false"
+          for tag in ("bundle-version", "upgrade-bundle", "strict-identifier"):
+              bundles = root.findall(f"./{tag}/bundle")
+              assert any(bundle.attrib.get("id") == bundle_id for bundle in bundles), tag
+          PY
+          postinstall="$(find build/package-expanded -type f -path '*/Scripts/postinstall' -print -quit)"
+          test -n "$postinstall"
+          grep -F 'com.miyakey.grimodex.inputmethod.ConverterServer' "$postinstall"
+          grep -F 'dev.ensan.inputmethod.azooKeyMac.ConverterServer' "$postinstall"
+          ! grep -F 'StandardOutPath' Tools/write_converter_server_launch_agent.sh
+          ! grep -F 'StandardErrorPath' Tools/write_converter_server_launch_agent.sh
+          grep -F 'CFBundleIdentifier' Tools/uninstall_grimodex_ime.sh
+
+      - name: Upload unsigned package contract artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: grimodex-ime-macos-unsigned-${{ github.sha }}
+          path: build/package/grimodex-ime-macos-*.pkg
+          if-no-files-found: error
+          retention-days: 7
