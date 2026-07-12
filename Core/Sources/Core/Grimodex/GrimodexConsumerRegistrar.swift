@@ -320,17 +320,18 @@ public final class GrimodexConsumerRegistrar: @unchecked Sendable {
         }
         defer { _ = close(descriptor) }
 
-        var information = stat()
-        guard fstat(descriptor, &information) == 0 else {
+        let information = UnsafeMutablePointer<stat>.allocate(capacity: 1)
+        defer { information.deallocate() }
+        guard fstat(descriptor, information) == 0 else {
             throw GrimodexConsumerRegistrarError.systemCall(
                 operation: "inspect private directory",
                 errno: errno
             )
         }
-        guard information.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+        guard information.pointee.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
             throw GrimodexConsumerRegistrarError.unsafeDirectory(path: url.path)
         }
-        guard information.st_uid == getuid() else {
+        guard information.pointee.st_uid == getuid() else {
             throw GrimodexConsumerRegistrarError.wrongOwner(path: url.path)
         }
         guard fchmod(descriptor, mode_t(0o700)) == 0 else {

@@ -34,20 +34,13 @@ final class GrimodexDirectoryWatcher: @unchecked Sendable {
         let source: DispatchSourceFileSystemObject
     }
 
-    private static let eventMask: DispatchSource.FileSystemEvent = [
-        .write,
-        .delete,
-        .rename,
-        .attrib,
-        .extend,
-        .link,
-        .revoke
-    ]
-    private static let invalidationMask: DispatchSource.FileSystemEvent = [
-        .delete,
-        .rename,
-        .revoke
-    ]
+    private static var eventMask: DispatchSource.FileSystemEvent {
+        [.write, .delete, .rename, .attrib, .extend, .link, .revoke]
+    }
+
+    private static var invalidationMask: DispatchSource.FileSystemEvent {
+        [.delete, .rename, .revoke]
+    }
 
     private let rootURL: URL
     private let projectsURL: URL
@@ -252,7 +245,10 @@ final class GrimodexDirectoryWatcher: @unchecked Sendable {
 
     private func registrationStillNamesCurrentDirectory(_ registration: Registration) -> Bool {
         var info = stat()
-        guard Darwin.stat(registration.path, &info) == 0 else {
+        let result = registration.path.withCString { path in
+            Darwin.stat(path, &info)
+        }
+        guard result == 0 else {
             return false
         }
         return (info.st_mode & S_IFMT) == S_IFDIR
@@ -297,7 +293,10 @@ final class GrimodexDirectoryWatcher: @unchecked Sendable {
 
     private func isDirectory(_ url: URL) -> Bool {
         var info = stat()
-        return Darwin.stat(url.path, &info) == 0
+        let result = url.path.withCString { path in
+            Darwin.stat(path, &info)
+        }
+        return result == 0
             && (info.st_mode & S_IFMT) == S_IFDIR
     }
 
