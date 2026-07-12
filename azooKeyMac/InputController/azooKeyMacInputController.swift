@@ -450,7 +450,7 @@ class azooKeyMacInputController: IMKInputController, NSMenuItemValidation { // s
         guard !self.shouldBlockForGrimodexContext(client: client) else {
             return false
         }
-        self.handleKeyEventWithConverterServer(
+        return self.handleKeyEventWithConverterServer(
             event: KeyEventCore(
                 modifierFlags: [.control],
                 characters: "s",
