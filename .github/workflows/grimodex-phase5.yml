@@ -133,14 +133,22 @@ jobs:
           test -x "$APP/Contents/MacOS/ConverterServer"
           test "$(plutil -extract CFBundleIdentifier raw "$APP/Contents/Info.plist")" = \
             'com.miyakey.grimodex.inputmethod'
-          ! plutil -p azooKeyMac/azooKeyMac.entitlements | grep -F \
-            'com.apple.security.network.client'
-          ! plutil -p azooKeyMac/ConverterServer.entitlements | grep -F \
-            'com.apple.security.network.client'
-          plutil -p azooKeyMac/azooKeyMac.entitlements \
-            | grep -F '"com.apple.security.temporary-exception.mach-register.global-name" => "com.miyakey.grimodex.inputmethod_Connection"'
-          plutil -p azooKeyMac/ConverterServer.entitlements \
-            | grep -F '"com.apple.security.app-sandbox" => true'
+          python3 - <<'PY'
+          import plistlib
+
+          def load(path: str) -> dict:
+              with open(path, "rb") as source:
+                  return plistlib.load(source)
+
+          app = load("azooKeyMac/azooKeyMac.entitlements")
+          server = load("azooKeyMac/ConverterServer.entitlements")
+          network_client = "com.apple.security.network.client"
+          assert network_client not in app
+          assert network_client not in server
+          assert app["com.apple.security.temporary-exception.mach-register.global-name"] == \
+              "com.miyakey.grimodex.inputmethod_Connection"
+          assert server["com.apple.security.app-sandbox"] is True
+          PY
 
       - name: Build and inspect unsigned pkg
         run: |
