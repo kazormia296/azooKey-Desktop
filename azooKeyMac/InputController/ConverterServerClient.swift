@@ -212,7 +212,9 @@ final class ConverterServerClient {
     private func sendResolvedSync(_ command: ConverterServerCommand) -> ConverterServerResponse? {
         do {
             let data = try ConverterServerCodec.encode(command)
-            let response = waitForResult(timeout: syncTimeout) { [weak self] complete in
+            let response: ConverterServerResponse? = waitForResult(
+                timeout: syncTimeout
+            ) { [weak self] complete in
                 self?.remoteObjectProxy { proxy in
                     guard let proxy else {
                         complete(nil)
