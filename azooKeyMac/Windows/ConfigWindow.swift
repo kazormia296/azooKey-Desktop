@@ -38,6 +38,9 @@ struct ConfigWindow: View {
     @State private var debugTypoCorrectionState: DebugTypoCorrectionState = .notDownloaded
     @State private var debugTypoCorrectionDownloadInProgress = false
     @State private var debugTypoCorrectionErrorMessage: String?
+    @State private var zenzaiModelReady = false
+    @State private var zenzaiModelDownloadInProgress = false
+    @State private var zenzaiModelErrorMessage: String?
     @State private var converterProcessRestartInProgress = false
     @State private var converterProcessRestartMessage: String?
 
@@ -103,6 +106,13 @@ struct ConfigWindow: View {
         case .notDownloaded:
             return "重み: ダウンロード未実施"
         }
+    }
+
+    private var zenzaiModelStatusText: String {
+        if self.zenzaiModelDownloadInProgress {
+            return "モデル: ダウンロード中..."
+        }
+        return self.zenzaiModelReady ? "モデル: ダウンロード済み" : "モデル: 未インストール"
     }
 
     private var converterSettingClientCapabilities: ConverterSettingClientCapabilities {
@@ -217,6 +227,47 @@ struct ConfigWindow: View {
         }
     }
 
+    @MainActor
+    private func refreshZenzaiModelState() async {
+        let state = await Task.detached(priority: .utility) {
+            ZenzaiModel.isValidInstalledModel()
+        }.value
+        self.zenzaiModelReady = state
+        if state {
+            self.zenzaiModelErrorMessage = nil
+        }
+    }
+
+    @MainActor
+    private func downloadZenzaiModel() {
+        guard !self.zenzaiModelDownloadInProgress else {
+            return
+        }
+        self.zenzaiModelDownloadInProgress = true
+        self.zenzaiModelErrorMessage = nil
+
+        Task {
+            do {
+                try await ZenzaiModel.download()
+                await MainActor.run {
+                    self.zenzaiModelReady = true
+                    self.zenzaiModelDownloadInProgress = false
+                    self.restartConverterProcess { success in
+                        if !success {
+                            self.zenzaiModelErrorMessage = "ダウンロード後にConverter Processを再読み込みできませんでした"
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.zenzaiModelReady = false
+                    self.zenzaiModelDownloadInProgress = false
+                    self.zenzaiModelErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
     nonisolated private static func migrateLegacyDebugTypoCorrectionWeightsIfNeeded(from sourceURL: URL, to targetURL: URL) {
         guard sourceURL.standardizedFileURL != targetURL.standardizedFileURL else {
             return
@@ -241,7 +292,7 @@ struct ConfigWindow: View {
     }
 
     @MainActor
-    private func restartConverterProcess() {
+    private func restartConverterProcess(completion: ((Bool) -> Void)? = nil) {
         guard !self.converterProcessRestartInProgress else {
             return
         }
@@ -251,6 +302,7 @@ struct ConfigWindow: View {
             DispatchQueue.main.async {
                 self.converterProcessRestartMessage = success ? "再起動しました" : "Converter Processに再起動を依頼できませんでした"
                 self.converterProcessRestartInProgress = false
+                completion?(success)
             }
         }
     }
@@ -594,6 +646,7 @@ struct ConfigWindow: View {
             await MainActor.run {
                 self.loadConverterSettingsIfNeeded()
             }
+            await self.refreshZenzaiModelState()
         }
     }
 
@@ -869,6 +922,23 @@ struct ConfigWindow: View {
                     Stepper("", value: $inferenceLimit, in: 1 ... 50)
                         .labelsHidden()
                     helpButton(helpContent: "推論上限を小さくすると、入力中のもたつきが改善されることがあります。", isPresented: $zenzaiInferenceLimitHelpPopover)
+                }
+                LabeledContent("Zenzaiモデル") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(self.zenzaiModelStatusText)
+                            .font(.caption)
+                            .foregroundStyle(self.zenzaiModelReady ? .secondary : .orange)
+                        Button(self.zenzaiModelReady ? "再ダウンロード" : "ダウンロード") {
+                            self.downloadZenzaiModel()
+                        }
+                        .disabled(self.zenzaiModelDownloadInProgress)
+                        if let zenzaiModelErrorMessage {
+                            Text(zenzaiModelErrorMessage)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             } header: {
                 Label("Zenzai設定", systemImage: "cpu")
