@@ -932,7 +932,9 @@ struct ConfigWindow: View {
                     VStack(alignment: .trailing, spacing: 4) {
                         Text(self.zenzaiModelStatusText)
                             .font(.caption)
-                            .foregroundStyle(self.zenzaiModelReady ? .secondary : .orange)
+                            .foregroundStyle(
+                                self.zenzaiModelReady ? Color.secondary : Color.orange
+                            )
                         Button {
                             self.downloadZenzaiModel()
                         } label: {

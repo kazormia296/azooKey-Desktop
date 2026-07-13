@@ -77,19 +77,15 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: recursive
-          lfs: true
+          lfs: false
 
-      - name: Fetch and verify model artifacts
+      - name: Fetch and verify language-model artifacts
         run: |
           set -euo pipefail
           git lfs install --local
-          git submodule foreach --recursive 'git lfs pull'
-          MODEL='azooKeyMac/Resources/gguf/ggml-model-Q5_K_M.gguf'
-          test -f "$MODEL"
-          test "$(wc -c < "$MODEL")" -gt 1000000
+          git -C azooKeyMac/Resources/base_n5_lm lfs pull
           test "$(find azooKeyMac/Resources/base_n5_lm -type f -name '*.marisa' -size +1024c | wc -l | tr -d ' ')" -ge 4
           ! grep -R -l -m 1 '^version https://git-lfs.github.com/spec/v1$' \
-            azooKeyMac/Resources/gguf \
             azooKeyMac/Resources/base_n5_lm
 
       - name: Select Xcode 16.3
@@ -146,7 +142,7 @@ jobs:
           app = load("azooKeyMac/azooKeyMac.entitlements")
           server = load("azooKeyMac/ConverterServer.entitlements")
           network_client = "com.apple.security.network.client"
-          assert network_client not in app
+          assert network_client in app
           assert network_client not in server
           assert app["com.apple.security.temporary-exception.mach-register.global-name"] == \
               "com.miyakey.grimodex.inputmethod_Connection"
