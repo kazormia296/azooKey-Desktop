@@ -29,19 +29,15 @@ jobs:
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           submodules: recursive
-          lfs: true
+          lfs: false
 
-      - name: Fetch Git LFS objects in submodules
+      - name: Fetch language-model Git LFS objects
         run: |
           set -euo pipefail
           git lfs install --local
-          git submodule foreach --recursive 'git lfs pull'
-          MODEL='azooKeyMac/Resources/gguf/ggml-model-Q5_K_M.gguf'
-          test -f "$MODEL"
-          test "$(wc -c < "$MODEL")" -gt 1000000
+          git -C azooKeyMac/Resources/base_n5_lm lfs pull
           test "$(find azooKeyMac/Resources/base_n5_lm -type f -name '*.marisa' -size +1024c | wc -l | tr -d ' ')" -ge 4
           ! grep -R -l -m 1 '^version https://git-lfs.github.com/spec/v1$' \
-            azooKeyMac/Resources/gguf \
             azooKeyMac/Resources/base_n5_lm
 
       - name: Select Xcode 16.3

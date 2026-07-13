@@ -157,7 +157,9 @@ public final class SegmentsManager {
             return .off
         }
         return .on(
-            weight: self.resourcesDirectoryURL.appendingPathComponent("ggml-model-Q5_K_M.gguf", isDirectory: false),
+            weight: ZenzaiModel.isInstalledModel()
+                ? ZenzaiModel.modelURL
+                : self.resourcesDirectoryURL.appendingPathComponent("ggml-model-Q5_K_M.gguf", isDirectory: false),
             inferenceLimit: Config.ZenzaiInferenceLimit().value,
             requestRichCandidates: requestRichCandidates,
             personalizationMode: self.zenzaiPersonalizationMode,

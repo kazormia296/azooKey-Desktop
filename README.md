@@ -110,7 +110,7 @@ hosted runner では入力ソースの手動追加、ログインセッション
 
 - macOS 15+
 - Xcode 16.3（CI）または上流が案内する Xcode 26.1+
-- Git LFS（submodule のモデル重み取得に必須）
+- Git LFS（言語モデルsubmoduleの取得に必須）
 - SwiftLint
 
 ```bash
@@ -120,26 +120,36 @@ git lfs install
 
 ### クローン
 
-submodule に zenz の gguf 重みと言語モデル（`.marisa`）が含まれます。
+言語モデル（`.marisa`）はsubmoduleから取得します。ZenzaiのGGUF重みは共通の
+GrimodexモデルReleaseから、macOSのパッケージインストール時にユーザー領域へ取得します。
+アプリ本体には同梱しません。
 
 ```bash
-git lfs install
 git clone https://github.com/kazormia296/azooKey-Desktop --recursive
 cd azooKey-Desktop
+git lfs install
+git submodule update --init --recursive
+mkdir -p "$HOME/Library/Group Containers/group.com.miyakey.grimodex.inputmethod/Library/Application Support/azooKey/zenzai"
+curl --fail --location \
+  https://github.com/kazormia296/grimodex-models/releases/download/zenzai-v3-small-q5km-v1/zenzai-v3-small-Q5_K_M.gguf \
+  --output "$HOME/Library/Group Containers/group.com.miyakey.grimodex.inputmethod/Library/Application Support/azooKey/zenzai/zenzai.gguf"
+printf '%s  %s\n' \
+  501f605d088f5b988791a00ae19ed46985ed7c48144f364b2f3f1f951c9b2083 \
+  "$HOME/Library/Group Containers/group.com.miyakey.grimodex.inputmethod/Library/Application Support/azooKey/zenzai/zenzai.gguf" | shasum -a 256 -c -
 ```
 
 既存 clone で submodule や LFS object が不足している場合は次を実行します。
 
 ```bash
 git submodule update --init --recursive
-git -C azooKeyMac/Resources/gguf lfs pull
 git -C azooKeyMac/Resources/base_n5_lm lfs pull
 ```
 
-モデルが LFS pointer のままでないことをサイズで確認できます。
+モデルが LFS pointer のままでないことをサイズで確認できます。Zenzaiモデルの状態はIME設定の
+「詳細設定」から確認でき、必要なら再ダウンロードできます。
 
 ```bash
-ls -lh azooKeyMac/Resources/gguf/ggml-model-Q5_K_M.gguf
+ls -lh "$HOME/Library/Group Containers/group.com.miyakey.grimodex.inputmethod/Library/Application Support/azooKey/zenzai/zenzai.gguf"
 ```
 
 ### 署名設定と開発版インストール
