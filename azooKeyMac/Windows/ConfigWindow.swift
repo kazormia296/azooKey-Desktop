@@ -923,6 +923,11 @@ struct ConfigWindow: View {
                         .labelsHidden()
                     helpButton(helpContent: "推論上限を小さくすると、入力中のもたつきが改善されることがあります。", isPresented: $zenzaiInferenceLimitHelpPopover)
                 }
+            } header: {
+                Label("Zenzai設定", systemImage: "cpu")
+            }
+
+            Section {
                 LabeledContent("Zenzaiモデル") {
                     VStack(alignment: .trailing, spacing: 4) {
                         Text(self.zenzaiModelStatusText)
@@ -943,7 +948,7 @@ struct ConfigWindow: View {
                     }
                 }
             } header: {
-                Label("Zenzai設定", systemImage: "cpu")
+                Label("Zenzaiモデル", systemImage: "arrow.down.circle")
             }
 
             Section {
