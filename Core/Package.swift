@@ -42,7 +42,11 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "CoreTests",
-        dependencies: ["Core"],
+        dependencies: [
+            "Core",
+            .product(name: "Crypto", package: "swift-crypto")
+        ],
+        resources: [.copy("Fixtures")],
         swiftSettings: [.interoperabilityMode(.Cxx)]
     )
 ]
