@@ -928,12 +928,14 @@ struct ConfigWindow: View {
                         Text(self.zenzaiModelStatusText)
                             .font(.caption)
                             .foregroundStyle(self.zenzaiModelReady ? .secondary : .orange)
-                        Button(self.zenzaiModelReady ? "再ダウンロード" : "ダウンロード") {
+                        Button {
                             self.downloadZenzaiModel()
+                        } label: {
+                            Text(self.zenzaiModelReady ? "再ダウンロード" : "ダウンロード")
                         }
                         .disabled(self.zenzaiModelDownloadInProgress)
-                        if let zenzaiModelErrorMessage {
-                            Text(zenzaiModelErrorMessage)
+                        if let message = self.zenzaiModelErrorMessage {
+                            Text(message)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
